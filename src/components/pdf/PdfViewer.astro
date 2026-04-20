@@ -1,0 +1,15 @@
+---
+interface Props { src: string; title?: string; }
+const { src, title = "Paper PDF" } = Astro.props;
+---
+<figure class="my-6">
+  <object data={src} type="application/pdf" width="100%" height="700">
+    <p>
+      Your browser can't embed PDFs. <a href={src} download>Download {title}</a>.
+    </p>
+  </object>
+  <figcaption class="text-sm text-neutral-600 mt-1">
+    <a href={src} target="_blank" rel="noreferrer">Open in new tab</a> ·
+    <a href={src} download>Download</a>
+  </figcaption>
+</figure>

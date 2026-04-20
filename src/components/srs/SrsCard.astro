@@ -1,0 +1,9 @@
+---
+interface Props { id: string; prompt: string; answer: string; paper: string; }
+const { id, prompt, answer, paper } = Astro.props;
+---
+<!--
+  Usage: place <SrsCard id="transformer-scaling" prompt="Why divide by √d_k?" answer="Prevents softmax saturation at large dot-product magnitudes." paper="transformer" />
+  inside a StageSection. On RetrievalCheck pass for the enclosing stage, all SrsCard elements in that stage are enqueued via lib/srs.enqueueCard.
+-->
+<div class="hidden" data-srs-card data-id={id} data-paper={paper} data-prompt={prompt} data-answer={answer}></div>

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MCQuiz, type MCQuestion } from "./MCQuiz";
+import { enqueueCard } from "../../lib/srs";
 
 type Props = {
   questions: MCQuestion[];
@@ -8,18 +9,30 @@ type Props = {
 
 export function RetrievalCheck({ questions, onPass }: Props) {
   const [correctSet, setCorrectSet] = useState<Set<number>>(new Set());
+  const elRef = useRef<HTMLDivElement>(null);
 
   function handleCorrect(i: number) {
     setCorrectSet((prev) => {
       const next = new Set(prev);
       next.add(i);
-      if (next.size === questions.length) onPass?.();
+      if (next.size === questions.length) {
+        const section = elRef.current?.closest("section");
+        section?.querySelectorAll<HTMLElement>("[data-srs-card]").forEach((card) => {
+          enqueueCard({
+            id: card.dataset.id!,
+            paperSlug: card.dataset.paper!,
+            prompt: card.dataset.prompt!,
+            answer: card.dataset.answer!,
+          });
+        });
+        onPass?.();
+      }
       return next;
     });
   }
 
   return (
-    <div className="my-6 p-4 border-2 border-dashed rounded">
+    <div ref={elRef} className="my-6 p-4 border-2 border-dashed rounded">
       <h3 className="font-semibold mb-2">Retrieval check</h3>
       {questions.map((q, i) => (
         <MCQuiz key={i} question={q} onCorrect={() => handleCorrect(i)} />
