@@ -1,17 +1,32 @@
 ---
-import '../styles/global.css';
+import "../styles/global.css";
+import { RoadmapGraph } from "../components/roadmap/RoadmapGraph.tsx";
+import { ContinueReading } from "../components/home/ContinueReading.tsx";
+import { PAPERS_META } from "../content/papers-meta";
 ---
-
 <html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ai_master — DL → Agents, step by step</title>
+  </head>
+  <body class="bg-white text-neutral-900">
+    <main class="max-w-5xl mx-auto px-4 py-8">
+      <header class="mb-6">
+        <h1 class="text-4xl font-bold">ai_master</h1>
+        <p class="text-neutral-600">Deep learning → agents, 2012 → 2026, one paper at a time.</p>
+      </header>
+      <ContinueReading client:only="react" />
+      <section class="mt-10">
+        <h2 class="text-2xl font-semibold mb-2">Roadmap</h2>
+        <p class="text-sm text-neutral-600 mb-4">
+          Click a bright node to learn a paper. Grey nodes are planned (not yet implemented).
+        </p>
+        <RoadmapGraph client:load papers={PAPERS_META} />
+      </section>
+      <footer class="mt-10 text-sm text-neutral-500">
+        <a href="/progress">Progress dashboard</a> · <a href="/review">Review queue</a>
+      </footer>
+    </main>
+  </body>
 </html>
