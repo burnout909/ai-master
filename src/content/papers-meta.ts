@@ -42,7 +42,7 @@ export const PAPERS_META: PaperMeta[] = [
 
   // ——— Efficiency ———
   { slug: "flashattention", title: "FlashAttention: Fast and Memory-Efficient Exact Attention", authors: "Dao et al.", year: 2022, era: "efficiency", arxivId: "2205.14135", summary: "IO-aware attention for GPU memory.", status: "implemented", influencedBy: ["transformer"] },
-  { slug: "mamba",       title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces", authors: "Gu, Dao", year: 2023, era: "efficiency", arxivId: "2312.00752", summary: "Selective SSM alternative to attention.", status: "stub", influencedBy: ["transformer"] },
+  { slug: "mamba",       title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces", authors: "Gu, Dao", year: 2023, era: "efficiency", arxivId: "2312.00752", summary: "Selective SSM alternative to attention.", status: "implemented", influencedBy: ["transformer"] },
   { slug: "gqa",         title: "GQA: Training Generalized Multi-Query Transformer Models", authors: "Ainslie et al.", year: 2023, era: "efficiency", arxivId: "2305.13245", summary: "Grouped-query attention for inference speed.", status: "implemented", influencedBy: ["transformer"] },
 
   // ——— Alignment ———

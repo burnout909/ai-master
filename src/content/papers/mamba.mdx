@@ -1,0 +1,316 @@
+---
+slug: mamba
+title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
+authors: "Gu, Dao"
+year: 2023
+era: efficiency
+arxivId: "2312.00752"
+estimatedMinutes: 55
+prerequisites: ["transformer"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { SelectiveScan } from "../../components/widgets/SelectiveScan.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Transformers dominate sequence modeling, but they carry a fundamental cost: self-attention is O(L²) in sequence length L. Every new token must attend to every previous token. At L = 4096 that is 16 million dot products per layer; at L = 100k it becomes prohibitive. The KV-cache scales linearly with context, but the attention computation itself scales quadratically — making very long-context inference slow and expensive.
+
+State space models (SSMs) offer a linear-time alternative. An SSM maintains a hidden state `h_t` that summarizes all past inputs, updating it with a simple recurrence: `h_t = A h_(t-1) + B x_t`. The output is `y_t = C h_t`. Because each step touches only h_t and x_t, inference is O(L) — no quadratic explosion. The catch: classical SSMs use fixed matrices A, B, C that do not depend on the input. This makes the dynamics input-agnostic — the model integrates every token with the same weights, blurring relevant content into an undifferentiated running average. It cannot selectively remember an important token or forget irrelevant noise.
+
+Mamba's core insight is to make the SSM parameters **input-dependent**. The step size Delta, the input projection B, and the output projection C all become functions of x_t. Delta_t controls how much the current token is "written" into the hidden state: a large Delta means absorb strongly, a small Delta near zero means skip this token. This gives the model a selective memory: it can latch onto salient content and discard noise — behavior that classical SSMs simply cannot produce.
+
+<PredictThenReveal client:load predictPrompt="Before toggling the widget: if A_t is always 0.8 (plain SSM), what do you expect to happen to h_t as the sequence progresses through both large and small x_t values?">
+  With a fixed A=0.8, the state h_t accumulates contributions from every token with the same decay rate. Large x_t bumps do lift the state, but the state also retains non-zero contributions from prior tokens indefinitely — blurring the history into a smoothed version. Small x_t values near zero barely change the state, but they also do not suppress the leftover from prior large inputs. The result is a low-pass-filtered signal that loses the sharp distinctions between important and unimportant tokens.
+</PredictThenReveal>
+
+**Interact with the widget:** toggle "Selective (Mamba)" on and off and step through t=0 to t=15. In plain-SSM mode A_t stays at 0.8 for every step. In Mamba mode A_t = 0.95 * sigmoid(2 * x_t) and B_t = sigmoid(1 + x_t), so both depend on x_t. Watch the h_t bar chart and the A_t readout change as you move the step slider.
+
+<SelectiveScan client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: when x_t is large and positive in selective mode, A_t rises. What does that actually mean for the hidden state — is the model remembering or forgetting the past?">
+  When x_t is large, sigmoid(2 * x_t) is close to 1, so A_t approaches 0.95 — the past hidden state `h_(t-1)` is retained at high fidelity (low forgetting). Simultaneously B_t is also large, so x_t is written in with strong weight. In other words: at an important token the model both preserves previous context AND absorbs the new input. Conversely when x_t is near zero, A_t drops, softening the past memory, and B_t also decreases, so the irrelevant token barely leaves a trace. This is the selectivity: the gate strength is tied directly to the content of the input.
+</PredictThenReveal>
+
+<SrsCard id="mamba-selectivity" paper="mamba" prompt="What makes Mamba a 'selective' SSM, and which parameters become input-dependent?" answer="In Mamba, Delta_t (step size), B_t (input projection), and C_t (output projection) are all functions of x_t, computed by learned linear projections. Classical SSMs use fixed A, B, C. The input-dependence lets Mamba choose how strongly to absorb each token and how much past state to retain — a content-aware gating that classical SSMs cannot do." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why is standard self-attention O(L²) in sequence length?", options: [
+    { text: "Every token must compute a dot product with every other token to form the attention matrix, giving L × L entries per head per layer.", correct: true, explain: "The attention matrix is L × L per head. Computing it requires L² dot products, and the softmax + weighted sum also work over L entries. This quadratic cost is why attention becomes expensive at long contexts, motivating linear-time alternatives like Mamba." },
+    { text: "The softmax normalization requires sorting all L scores, which is O(L log L), and the two matrix multiplications each add another O(L) factor.", correct: false, explain: "Softmax is O(L) per row — no sorting needed. The O(L²) cost comes from computing the L × L dot-product matrix QK^T, not from the normalization step." },
+    { text: "The KV-cache stores L key-value pairs that must all be re-read from memory on every forward pass, giving O(L²) memory access.", correct: false, explain: "KV-cache read is O(L) per new token — you read L existing keys/values once. The O(L²) comes from forming the attention scores QK^T as a dense matrix multiplication, not from cache access patterns." },
+  ]},
+  { prompt: "What is the fundamental limitation of a classical (non-selective) SSM?", options: [
+    { text: "Its dynamics are input-independent: A, B, C are fixed matrices that treat every token identically, so the model cannot choose to remember or ignore a token based on its content.", correct: true, explain: "A fixed A means the decay rate is the same regardless of whether the current input is relevant. A fixed B means every token is projected into the state with the same weight. This makes classical SSMs act like linear filters — good at structured signals but unable to make content-aware decisions that attention handles naturally." },
+    { text: "The recurrence h_t = A h_{t-1} + B x_t is nonlinear, making it unstable and hard to train on long sequences.", correct: false, explain: "Classical SSMs are in fact linear — A, B, C are fixed matrices and the recurrence is a linear operation. Stability is controlled by the eigenvalues of A (typically constrained to have magnitude < 1). The problem is not instability but rather the lack of input-dependence." },
+    { text: "Classical SSMs require O(L²) memory because the state h_t must store the full history of inputs.", correct: false, explain: "The hidden state h_t has fixed size d (independent of L), so SSMs are O(d) in memory at each step — one of their main advantages over attention. The limitation is expressiveness (input-independence), not memory." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Mamba starts from the continuous-time state space model:
+
+<Math display expr="h'(t) = A\,h(t) + B\,x(t), \quad y(t) = C\,h(t) + D\,x(t)" />
+
+where h(t) is the hidden state vector, x(t) the scalar input, and A, B, C, D are matrices/vectors. To apply this on discrete token sequences, Mamba discretizes via the **zero-order hold** (ZOH) rule using a learned step size Delta:
+
+<Math display expr="\bar{A} = \exp(\Delta A), \qquad \bar{B} \approx \Delta B" />
+
+This gives the discrete recurrence used at every time step:
+
+<Math display expr="h_t = \bar{A}\,h_{t-1} + \bar{B}\,x_t, \qquad y_t = C\,h_t" />
+
+So far this is a standard discretized SSM. Mamba's key move: make Delta, B, and C **functions of the current input x_t** via learned linear projections:
+
+<Math display expr="B_t = S_B(x_t),\quad C_t = S_C(x_t),\quad \Delta_t = \text{softplus}(S_\Delta(x_t))" />
+
+where S_B, S_C, S_Delta are linear layers. Because Delta enters the ZOH formula, a large Delta_t means a large Ā_t and a large B̄_t — the model strongly absorbs x_t into the state. A small Delta_t near zero means Ā_t approaches the identity (perfect memory of the past) and B̄_t approaches zero (ignore the current input). This is content-aware gating built into the scan kernel itself.
+
+<DerivationStep client:load
+  question={{
+    prompt: "What does Delta_t control geometrically in the discretization?",
+    options: [
+      { text: "Delta_t is the step size: it controls how far the continuous-time system evolves before sampling. A large Delta means the system has more time to respond to x_t, writing it strongly into the state. A small Delta means almost no evolution — the state barely changes.", correct: true, explain: "In ZOH discretization, Ā = exp(Delta * A) and B̄ ≈ Delta * B. As Delta → 0, Ā → I (identity) and B̄ → 0: the state is frozen and new input is ignored — the model skips this token. As Delta grows, the exponential decays A toward zero and B̄ grows: the model absorbs x_t and forgets the past. Delta is the continuous-time integration window." },
+      { text: "Delta_t scales the output projection C_t, amplifying y_t at important tokens and suppressing it elsewhere.", correct: false, explain: "Delta does not directly touch C. It enters the ZOH discretization for A and B: Ā = exp(Delta * A) and B̄ ≈ Delta * B. The effect is on how much of x_t enters the state and how much past state is preserved, not on the output projection." },
+      { text: "Delta_t is a dropout mask that zeroes out the state at irrelevant positions, similar to attention masking.", correct: false, explain: "Delta is a continuous positive scalar, not a binary mask. It smoothly modulates the integration rate. The selectivity is achieved through a gradient, not hard gating. Near-zero Delta makes the state nearly unchanged (the token is effectively ignored), but this is a continuous effect." },
+    ],
+  }}
+  revealExpr="\Delta_t \to 0 \Rightarrow \bar{A} \to I,\; \bar{B} \to 0 \;\text{(skip token)};\quad \Delta_t \gg 0 \Rightarrow \text{absorb strongly}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why is softplus used to parameterize Delta_t rather than, say, a sigmoid or a raw linear layer?",
+    options: [
+      { text: "softplus(z) = log(1 + exp(z)) is always strictly positive for any real z, ensuring Delta_t > 0 as required by the ZOH formula. A sigmoid would cap Delta at 1 (limiting maximum absorption), and a raw linear layer could produce negative Delta, which is physically meaningless as a time step.", correct: true, explain: "The ZOH discretization Ā = exp(Delta * A) requires Delta > 0 to be a valid time-step interval. softplus outputs (0, ∞), matching this constraint exactly. Sigmoid outputs (0, 1) which would cap integration time and prevent very large Delta values needed to strongly absorb an important token. A raw linear layer can go negative, giving exp of a negative-Delta term, which reverses the stability properties of A." },
+      { text: "softplus is used because it is differentiable everywhere unlike ReLU, which has a zero gradient for negative inputs.", correct: false, explain: "While smoothness is a nice property, the primary reason is the positivity constraint. Delta must be positive for the ZOH discretization to be valid. softplus satisfies this; ReLU does not (it produces exactly zero for negative inputs, which would freeze the scan update). The differentiability argument alone would also justify sigmoid." },
+      { text: "softplus compresses Delta_t into the range (0, 1), matching the magnitude of the matrix A for numerical stability.", correct: false, explain: "softplus has unbounded output — for large positive inputs it is approximately linear. It does not compress to (0,1). The key property is strict positivity across all real inputs, not a bounded range." },
+    ],
+  }}
+  revealExpr="\Delta_t = \text{softplus}(S_\Delta(x_t)) > 0 \;\forall\, x_t \in \mathbb{R}"
+/>
+
+<SrsCard id="mamba-zoh" paper="mamba" prompt="Write the ZOH discretization formulas that convert continuous A, B, Delta into discrete Ā, B̄." answer="Ā = exp(Delta * A) and B̄ ≈ Delta * B. The discrete recurrence is h_t = Ā h_{t-1} + B̄ x_t. When Delta is small, Ā → I (identity) and B̄ → 0: the token is skipped. When Delta is large, Ā decays toward 0 and B̄ is large: the token is absorbed and the past is forgotten." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In Mamba's selective SSM, which of the following are NOT input-dependent?", options: [
+    { text: "The matrix A itself is kept fixed (though the discretized Ā = exp(Delta * A) is input-dependent through Delta). Only Delta, B, and C are directly parameterized as functions of x_t.", correct: true, explain: "A is a fixed learned parameter — it defines the 'backbone' dynamics of the state space and is shared across all time steps and all inputs. Making A input-dependent would break the associativity property needed for the parallel scan. Delta, B, C are made input-dependent via linear projections S_Delta, S_B, S_C, which is sufficient to achieve selectivity while preserving parallelizability." },
+    { text: "Delta is kept fixed — only B and C are input-dependent in Mamba.", correct: false, explain: "Delta is the primary selectivity mechanism in Mamba. It is computed as softplus(S_Delta(x_t)) and controls the integration step size per token. Fixing Delta would make the gating uniform and defeat most of the selectivity benefit." },
+    { text: "All of A, B, C, and Delta are input-dependent in Mamba — that is the entire point of 'selective'.", correct: false, explain: "A is deliberately kept fixed. If A were input-dependent, the scan h_t = Ā_t h_{t-1} + B̄_t x_t would no longer be associative across time steps, making the efficient parallel scan algorithm inapplicable. The selectivity needed in practice is achieved through Delta (absorbed into Ā and B̄) and direct B, C projection." },
+  ]},
+  { prompt: "What happens to the discrete recurrence h_t = Ā h_{t-1} + B̄ x_t when Delta_t is very small (near zero)?", options: [
+    { text: "Ā → I and B̄ → 0, so h_t ≈ h_{t-1}: the state is nearly unchanged and the current token x_t is effectively ignored.", correct: true, explain: "For small Delta, exp(Delta * A) ≈ I + Delta * A ≈ I (since Delta → 0 dominates) and Delta * B → 0. The recurrence becomes h_t ≈ h_{t-1}: the hidden state is frozen. This is how the model 'skips' irrelevant tokens without any explicit mask — the step size is simply set so small that no update occurs." },
+    { text: "Ā → 0 and B̄ → 0, so h_t → 0: the state resets to zero at that token, acting like a hard forget gate.", correct: false, explain: "Ā → exp(0 * A) = exp(0) = I as Delta → 0, not 0. The state does not reset — it is preserved. For Ā → 0 you would need Delta → ∞ (large step, which actually absorbs the new token strongly and forgets the past)." },
+    { text: "Ā → 1 (scalar) and B̄ → 1, so the recurrence becomes a simple average h_t = h_{t-1} + x_t.", correct: false, explain: "B̄ = Delta * B → 0 as Delta → 0, not 1. And Ā = exp(Delta * A) → I (identity matrix), not the scalar 1. The result is h_t ≈ h_{t-1}, not an unbounded sum h_{t-1} + x_t." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of Mamba's selective scan in the correct order:
+
+<LineReorder client:load lines={[
+  "Project input x_t to get per-token parameters: Delta_t, B_t, C_t via linear layers",
+  "Discretize A and B using Delta_t: Ā_t = exp(Delta_t * A), B̄_t = Delta_t * B_t",
+  "Scan hidden state: h_t = Ā_t * h_{t-1} + B̄_t * x_t",
+  "Compute output: y_t = C_t * h_t",
+  "Apply residual and output projection to produce the final token embedding",
+]} />
+
+Fill in the blank — the state update inside the scan loop:
+
+```text
+def selective_scan(x, A, S_B, S_C, S_delta):
+    # x: (L,) input sequence
+    h = 0
+    ys = []
+    for t in range(len(x)):
+        delta_t = softplus(S_delta(x[t]))
+        B_t     = S_B(x[t])
+        C_t     = S_C(x[t])
+        A_bar   = exp(delta_t * A)
+        B_bar   = delta_t * B_t
+        h       = _______________________
+        ys.append(C_t * h)
+    return ys
+```
+
+<FillBlank answer="A_bar * h + B_bar * x[t]" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the selective scan, why must C_t be applied after the state update (h_t = Ā h_{t-1} + B̄ x_t) rather than before?", options: [
+    { text: "C_t is the output projection — it reads from the updated state h_t to produce y_t. Applying it before the update would read the stale h_{t-1}, missing the contribution of x_t that was just written in.", correct: true, explain: "The SSM equations are h_t = Ā h_{t-1} + B̄ x_t followed by y_t = C_t h_t. C reads the current-step state, so it must come after the state is updated. Applying C to h_{t-1} would give y_t = C_t h_{t-1}, which corresponds to a one-step-delayed readout — a different and less expressive model." },
+    { text: "C_t must come before the update because it gates how much of x_t is allowed into the state — it acts as an input gate, not an output gate.", correct: false, explain: "C_t is the output projection, not an input gate. The input gate in Mamba is B_t (which scales how much x_t enters the state via B̄ = Delta * B_t). C_t determines which dimensions of h_t are read out as y_t — it is always applied after the state update." },
+    { text: "The order does not matter because matrix multiplication is associative: C_t * (Ā h_{t-1} + B̄ x_t) = (C_t Ā) h_{t-1} + (C_t B̄) x_t.", correct: false, explain: "While the algebraic expansion is valid, the order matters for the recurrence structure. If you fold C into Ā and B̄ you produce a new input-output pair but you change what is stored in h_t. The hidden state h_t must be the pre-C value so it can serve as h_{t-1} in the next step. The sequential structure of the recurrence requires C to be applied after the state update." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the selective scan in NumPy. Given an input sequence x of shape (L,) and scalar-valued functions for A_t (decay) and B_t (input gate), compute the hidden state sequence h over all L steps, then return it along with the output y_t = C * h_t using a fixed scalar C=1.0.
+
+<HintFade client:load
+  hints={[
+    "Iterate t from 0 to L-1. Maintain a scalar state h (initialized to 0). At each step compute A_t and B_t from x[t], then apply h = A_t * h + B_t * x[t]. Collect h values into a list.",
+    "Use np.tanh to keep values bounded: try A_t = 0.9 * (1 + np.tanh(x[t])) / 2 (range 0–0.9) and B_t = (1 + np.tanh(x[t])) / 2 (range 0–1). These mimic sigmoid-style input-dependence.",
+    "Full solution: initialize h=0, loop over t, set A_t = 0.9 * sigmoid(x[t]) and B_t = sigmoid(x[t]) (using sigmoid = 1/(1+exp(-x))), then h = A_t * h + B_t * x[t]. Append h to hs list. Return np.array(hs).",
+  ]}
+  solutionCode={`import numpy as np
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def selective_scan(x):
+    """
+    x: (L,) input sequence
+    returns: h (L,) hidden states, y (L,) outputs with C=1
+    """
+    L = len(x)
+    hs = []
+    h = 0.0
+    for t in range(L):
+        A_t = 0.9 * sigmoid(x[t])   # input-dependent decay in (0, 0.9)
+        B_t = sigmoid(x[t])          # input-dependent write gate in (0, 1)
+        h = A_t * h + B_t * x[t]
+        hs.append(h)
+    hs = np.array(hs)
+    y = hs  # C = 1
+    return hs, y`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def selective_scan(x):
+    """
+    x: (L,) input sequence
+    returns: h (L,) hidden states, y (L,) outputs with C=1
+    """
+    # TODO: implement the selective scan
+    pass
+
+# Quick test
+np.random.seed(0)
+x = np.sin(np.arange(16) * 0.8)
+result = selective_scan(x)
+if result is not None:
+    hs, y = result
+    print("h shape:", hs.shape)     # should be (16,)
+    print("h[0]:", round(float(hs[0]), 4))
+    print("h[-1]:", round(float(hs[-1]), 4))
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def selective_scan(x):
+    L = len(x)
+    hs = []
+    h = 0.0
+    for t in range(L):
+        A_t = 0.9 * sigmoid(x[t])
+        B_t = sigmoid(x[t])
+        h = A_t * h + B_t * x[t]
+        hs.append(h)
+    hs = np.array(hs)
+    y = hs
+    return hs, y
+`}
+  testCode={`import numpy as np
+
+def sigmoid(z):
+    return 1 / (1 + np.exp(-z))
+
+def selective_scan(x):
+    L = len(x)
+    hs = []
+    h = 0.0
+    for t in range(L):
+        A_t = 0.9 * sigmoid(x[t])
+        B_t = sigmoid(x[t])
+        h = A_t * h + B_t * x[t]
+        hs.append(h)
+    hs = np.array(hs)
+    y = hs
+    return hs, y
+
+np.random.seed(42)
+
+# Test 1: output length equals input length
+x = np.sin(np.arange(16) * 0.8)
+hs, y = selective_scan(x)
+assert len(hs) == len(x), f"Expected len {len(x)}, got {len(hs)}"
+assert len(y) == len(x), f"y length mismatch"
+
+# Test 2: state vanishes quickly when A_t is small (near-zero input)
+x_zero = np.zeros(20)
+hs_z, _ = selective_scan(x_zero)
+assert np.allclose(hs_z, 0.0, atol=1e-8), "All-zero input should produce all-zero states"
+
+# Test 3: h[0] = B_0 * x[0] (starting from h=0)
+x_test = np.array([1.0, 0.0, 0.0])
+hs_t, _ = selective_scan(x_test)
+A0 = 0.9 * sigmoid(x_test[0])
+B0 = sigmoid(x_test[0])
+expected_h0 = A0 * 0.0 + B0 * x_test[0]
+assert abs(hs_t[0] - expected_h0) < 1e-9, f"h[0] mismatch: {hs_t[0]} vs {expected_h0}"
+
+# Test 4: recurrence is correct at step 1
+A1 = 0.9 * sigmoid(x_test[1])
+B1 = sigmoid(x_test[1])
+expected_h1 = A1 * hs_t[0] + B1 * x_test[1]
+assert abs(hs_t[1] - expected_h1) < 1e-9, f"h[1] mismatch: {hs_t[1]} vs {expected_h1}"
+
+# Test 5: large positive x drives state up
+x_big = np.full(10, 5.0)
+hs_big, _ = selective_scan(x_big)
+assert hs_big[-1] > hs_big[0], "State should grow under large positive input"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the selective_scan implementation, what role does sigmoid(x[t]) play for both A_t and B_t?", options: [
+    { text: "sigmoid(x[t]) maps x[t] to (0, 1), providing an input-dependent scalar that scales both the decay rate (A_t) and the write gate (B_t). Large positive x[t] pushes both toward 1 — strong write and high retention; negative x[t] pushes both toward 0 — weak write and low retention.", correct: true, explain: "sigmoid(z) = 1/(1+exp(-z)) is in (0,1) for all real z. For A_t = 0.9 * sigmoid(x_t), large x_t gives A_t near 0.9 (high retention) and small/negative x_t gives A_t near 0 (state decays). For B_t = sigmoid(x_t), large x_t gives near-1 write gate and near-zero x_t gives near-0. This couples decay and writing to the same content signal, producing the selective behavior." },
+    { text: "sigmoid(x[t]) normalizes x[t] so that all inputs have the same magnitude, preventing the hidden state from exploding.", correct: false, explain: "Normalization is not the purpose here. sigmoid maps x[t] to a gate value in (0,1) that controls how the current token interacts with the state — this is content-aware gating. While it does bound the gate values, the motivation is selectivity (choosing which tokens matter), not just preventing explosions." },
+    { text: "sigmoid(x[t]) is used because it matches the ZOH discretization formula exactly — Ā = sigmoid(Delta * A) is the correct discrete approximation.", correct: false, explain: "The ZOH formula uses exp(Delta * A), not sigmoid. sigmoid is used here to produce input-dependent gate values in (0,1) for the simplified scalar scan. In the full Mamba paper, Delta is processed via softplus and the state matrix uses the matrix exponential exp(Delta * A)." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2312.00752.pdf" title="Mamba: Linear-Time Sequence Modeling with Selective State Spaces (Gu, Dao 2023)" />
+
+Suggested reading order: §1 (Introduction — motivation from the O(L²) attention bottleneck and why classical SSMs fall short) → §3.1 (Selective State Space Models — formal definition of input-dependent Delta, B, C and the selectivity mechanism) → §3.2 (Efficient Implementation — the hardware-aware parallel scan algorithm that makes selective SSMs practical on GPUs despite the sequential recurrence).
+
+</StageSection>
