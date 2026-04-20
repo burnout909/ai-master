@@ -1,10 +1,14 @@
 import { useState, type ReactNode } from "react";
 
-type Props = { hints: [string, string, string]; solution: ReactNode };
+type Props = { hints: [string, string, string]; solution?: ReactNode; solutionCode?: string };
 
-export function HintFade({ hints, solution }: Props) {
+export function HintFade({ hints, solution, solutionCode }: Props) {
   const [level, setLevel] = useState(0);
   const [showSolution, setShowSolution] = useState(false);
+
+  const solutionContent = solutionCode
+    ? <pre className="text-sm bg-neutral-100 p-2 rounded">{solutionCode}</pre>
+    : solution;
 
   return (
     <div className="my-3 border rounded p-3 bg-yellow-50">
@@ -29,7 +33,7 @@ export function HintFade({ hints, solution }: Props) {
       {level >= 1 && <p className="text-sm">💡 {hints[0]}</p>}
       {level >= 2 && <p className="text-sm">💡 {hints[1]}</p>}
       {level >= 3 && <p className="text-sm">💡 {hints[2]}</p>}
-      {showSolution && <div className="mt-2 border-t pt-2">{solution}</div>}
+      {showSolution && <div className="mt-2 border-t pt-2">{solutionContent}</div>}
     </div>
   );
 }

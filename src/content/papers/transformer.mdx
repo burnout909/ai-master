@@ -1,0 +1,228 @@
+---
+slug: transformer
+title: "Attention Is All You Need"
+authors: "Vaswani et al."
+year: 2017
+era: transformer
+arxivId: "1706.03762"
+estimatedMinutes: 75
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { AttentionMatrix } from "../../components/widgets/AttentionMatrix.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before 2017, sequence models read tokens one-by-one (RNN/LSTM). Every position waited on its predecessor. Training long sequences was slow; very distant dependencies were forgotten.
+
+**Setup:** think of translating the sentence "The cat sat on the mat." You want each word's representation to be able to "look at" every other word directly.
+
+<PredictThenReveal client:load predictPrompt="Before touching the widget: if each word could look at every other word directly, what would go wrong as sentences get longer? Type your guess.">
+  Two things: **(a)** the number of query–key pairs grows as _n²_, and **(b)** without weighting, "looking at everything" is just averaging — you lose position info. The Transformer solves both: the _softmax_ creates weighted attention (so it's never uniform averaging), and _positional encodings_ re-inject order.
+</PredictThenReveal>
+
+Now play with the widget below. Change `d_k`. Toggle the √d_k scaling. Watch the attention row for the selected query token.
+
+<AttentionMatrix client:load />
+
+<PredictThenReveal client:load predictPrompt="Predict: when you DISABLE √d_k scaling at large d_k (say 128), does the attention row become more peaked or more flat? Why?">
+  **More peaked** — very sharp, often a single cell near 1.0. Dot products of high-dimensional random vectors scale with √d_k, so without the divisor softmax inputs are huge and softmax saturates. Dividing by √d_k keeps softmax inputs order-O(1), giving smooth gradients.
+</PredictThenReveal>
+
+<SrsCard id="transformer-scaling" paper="transformer" prompt="Why divide by √d_k in scaled dot-product attention?" answer="Large dot products push softmax into saturation (near one-hot), killing gradients. Dividing by √d_k keeps the pre-softmax values O(1) regardless of d_k." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why was self-attention attractive vs RNNs?", options: [
+    { text: "All positions computable in parallel", correct: true, explain: "RNNs serialize along the time axis; attention only needs matmuls." },
+    { text: "Lower FLOPs", correct: false, explain: "FLOPs can actually be higher for long sequences (n²)." },
+    { text: "Requires less data", correct: false, explain: "Transformers typically need more data, not less." },
+  ]},
+  { prompt: "What does scaling by √d_k prevent?", options: [
+    { text: "Softmax saturation in large embedding dims", correct: true, explain: "Keeps logits O(1)." },
+    { text: "Overfitting", correct: false, explain: "That's dropout's job." },
+    { text: "Exploding gradients in backprop", correct: false, explain: "Indirectly helps, but the direct reason is softmax saturation." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Scaled dot-product attention:
+
+<Math display expr="\text{Attn}(Q, K, V) = \text{softmax}\!\left(\frac{Q K^\top}{\sqrt{d_k}}\right) V" />
+
+Where _Q_ ∈ ℝ^(n×d_k), _K_ ∈ ℝ^(n×d_k), _V_ ∈ ℝ^(n×d_v).
+
+**Derivation of scaling:** assume _q_ and _k_ have iid components with mean 0, variance 1. Then <Math expr="q \cdot k = \sum_{i=1}^{d_k} q_i k_i" />.
+
+<DerivationStep client:load
+  question={{
+    prompt: "What is Var(q · k)?",
+    options: [
+      { text: "d_k", correct: true, explain: "Sum of d_k iid zero-mean variance-1 products, each with variance 1." },
+      { text: "1", correct: false, explain: "That would be for d_k = 1." },
+      { text: "√d_k", correct: false, explain: "That's the standard deviation, not the variance." },
+    ],
+  }}
+  revealExpr="\mathrm{Var}(q \cdot k) = d_k \implies \mathrm{sd}(q \cdot k) = \sqrt{d_k}"
+/>
+
+To keep softmax inputs order-O(1) regardless of _d_k_, divide by <FillBlank answer="sqrt(d_k)" placeholder="?" client:load /> before softmax.
+
+**Multi-head attention:**
+
+<Math display expr="\text{MultiHead}(Q,K,V) = \text{Concat}(\text{head}_1, \dots, \text{head}_h) W^O" />
+<Math display expr="\text{head}_i = \text{Attn}(Q W^Q_i,\; K W^K_i,\; V W^V_i)" />
+
+Each head has its own projection and captures different dependency patterns (syntax, coreference, etc.).
+
+<SrsCard id="transformer-multihead" paper="transformer" prompt="Why use multi-head attention instead of one big attention head?" answer="Each head learns different relational patterns at lower per-head dimension. h heads of dim d_k each ≈ same compute as one head of dim h·d_k, but with diverse attention patterns." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "For iid zero-mean unit-variance q, k, sd(q·k) = ?", options: [
+    { text: "√d_k", correct: true, explain: "Variance d_k ⇒ sd √d_k." },
+    { text: "d_k", correct: false, explain: "That's the variance." },
+    { text: "1", correct: false, explain: "Only if d_k=1." },
+  ]},
+  { prompt: "Multi-head attention primarily increases:", options: [
+    { text: "Representational diversity via different attention patterns", correct: true, explain: "Each head attends differently." },
+    { text: "Sequence length capacity", correct: false, explain: "Orthogonal axis." },
+    { text: "Depth of the network", correct: false, explain: "Heads run in parallel, same depth." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the steps of scaled dot-product attention in order:
+
+<LineReorder client:load lines={[
+  "Compute QKᵀ (n × n matrix of dot products)",
+  "Divide every entry by √d_k",
+  "Apply softmax row-wise",
+  "Multiply by V to get output (n × d_v)",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def attention(Q, K, V, dk):
+    scores = Q @ K.T
+    scores = scores / _______    # ← fill
+    weights = softmax(scores, axis=-1)
+    return weights @ V
+```
+
+<FillBlank answer="sqrt(dk)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What happens if you softmax BEFORE scaling?", options: [
+    { text: "Softmax saturates on large d_k, learning stalls", correct: true, explain: "The scaling must precede softmax for it to matter." },
+    { text: "Same output — softmax is scale-invariant", correct: false, explain: "Softmax is NOT scale-invariant." },
+    { text: "Output would be undefined", correct: false, explain: "Numerically defined, just poor." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement scaled dot-product attention in NumPy.
+
+<HintFade client:load
+  hints={[
+    "Use np.einsum or simple matmul. Remember softmax should operate along the last axis.",
+    "Implement softmax yourself: subtract row-max for numerical stability, then exp + normalize.",
+    "The scaling divisor is √dk. Apply it BEFORE softmax, AFTER the dot product.",
+  ]}
+  solutionCode={`import numpy as np
+
+def softmax(x, axis=-1):
+    x = x - np.max(x, axis=axis, keepdims=True)
+    e = np.exp(x)
+    return e / np.sum(e, axis=axis, keepdims=True)
+
+def attention(Q, K, V):
+    dk = Q.shape[-1]
+    scores = Q @ K.swapaxes(-1, -2) / np.sqrt(dk)
+    w = softmax(scores, axis=-1)
+    return w @ V`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def softmax(x, axis=-1):
+    # TODO: stable softmax
+    pass
+
+def attention(Q, K, V):
+    # TODO: implement scaled dot-product attention
+    pass
+
+# Quick sanity: shapes should match
+Q = np.random.randn(2, 4)
+K = np.random.randn(3, 4)
+V = np.random.randn(3, 5)
+out = attention(Q, K, V)
+print("output shape:", None if out is None else out.shape)
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`
+import numpy as np
+def softmax(x, axis=-1):
+    x = x - np.max(x, axis=axis, keepdims=True)
+    e = np.exp(x); return e / e.sum(axis=axis, keepdims=True)
+def attention(Q, K, V):
+    dk = Q.shape[-1]
+    s = Q @ K.swapaxes(-1, -2) / np.sqrt(dk)
+    w = softmax(s, axis=-1)
+    return w @ V
+`}
+  testCode={`
+import numpy as np
+np.random.seed(0)
+Q = np.random.randn(2,4); K = np.random.randn(3,4); V = np.random.randn(3,5)
+out = attention(Q, K, V)
+assert out.shape == (2,5), f"bad shape {out.shape}"
+w = softmax(Q @ K.T / np.sqrt(4), axis=-1)
+assert np.allclose(w.sum(axis=-1), 1.0), "softmax rows must sum to 1"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Stable softmax subtracts row-max before exp to:", options: [
+    { text: "Prevent overflow in exp", correct: true, explain: "exp(1000) overflows; exp(0) doesn't." },
+    { text: "Center the output", correct: false, explain: "Output still sums to 1, unchanged." },
+    { text: "Make softmax differentiable", correct: false, explain: "It's already differentiable." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1706.03762.pdf" title="Attention Is All You Need" />
+
+Suggested reading order: §3 (Model Architecture) → §3.2 (Scaled Dot-Product Attention) → §3.2.2 (Multi-Head) → §5 (Training).
+
+</StageSection>
