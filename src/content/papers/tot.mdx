@@ -1,0 +1,260 @@
+---
+slug: tot
+title: "Tree of Thoughts: Deliberate Problem Solving with Large Language Models"
+authors: "Yao, Yu, Zhao, Shafran, Griffiths, Cao, Narasimhan"
+year: 2023
+era: agents
+arxivId: "2305.10601"
+estimatedMinutes: 45
+prerequisites: ["cot"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { TotTree } from "../../components/widgets/TotTree.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Chain-of-Thought prompting asks a language model to reason step-by-step before answering. This works well for many tasks — but it commits the model to a single linear trajectory through the reasoning space. Once an early step goes wrong, the chain cannot recover: every subsequent step builds on that mistake, and by the end the model has wasted its entire token budget going in the wrong direction. For hard problems — the Game of 24, creative writing with structural constraints, or mini-crosswords — a wrong early branch dooms the entire attempt.
+
+Tree of Thoughts (ToT) breaks this commitment. Instead of one chain, the model explicitly maintains a *tree* of partial reasoning states. At each step, a **thought generator** samples `k` candidate continuations (using the same LLM with an appropriate prompt). An **evaluator** — again the same LLM, but prompted differently — scores each candidate thought: "does this partial state look promising?" A **search algorithm** (BFS, DFS, or best-first) then decides which branches to expand next and which to prune. The result is deliberate, structured exploration of the reasoning space rather than a one-shot commit.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: in the tree below, A1 scores 0.7, A2 scores 0.4, A3 scores 0.1, and A1's child B1 scores 0.9. Which strategy reaches B1 (score 0.9) the fastest — BFS, DFS, or best-first? And why?">
+  Best-first reaches B1 earliest because it always expands the highest-scoring unexpanded node. After expanding root it sees A1 (0.7), A2 (0.4), A3 (0.1) — it picks A1 and immediately discovers B1 (0.9). BFS would expand all of level-1 before touching level-2. DFS would go deep on A1's subtree, which happens to work here, but would keep diving into low-scoring branches when A1 looks good early and would not prioritize by score. Best-first is score-guided and finds the best node with the fewest wasted expansions.
+</PredictThenReveal>
+
+**Interact with the widget:** use the Strategy selector to switch between BFS, DFS, and best-first. Advance through steps with the slider and watch the order in which nodes are highlighted. Observe when the "Best seen so far" value reaches 0.9. Notice that best-first hits 0.9 after only 3 expansions, while BFS needs all of level-1 first.
+
+<TotTree client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: DFS expands A1 then B1 then B2 before visiting A2. If the tree were much deeper and A1's subtree had no good nodes past depth 2, what would happen to DFS's token budget?">
+  DFS would sink its entire budget into A1's subtree, recursively exploring all its descendants before discovering that A2 contains B4 (score 0.8). This is DFS's main weakness for ToT: without a score-based cutoff, it can waste O(branch^depth) evaluations on a single bad branch. Best-first avoids this by globally re-ranking across all open branches after each expansion, so a mediocre branch gets deprioritized as soon as a better sibling appears. This is why the paper reports best-first and BFS outperforming DFS on the Game of 24 benchmark.
+</PredictThenReveal>
+
+<SrsCard id="tot-core-insight" paper="tot" prompt="What are the three components of Tree of Thoughts and what does each do?" answer="1. Thought generator: the LLM prompted to sample k candidate partial-solution continuations from the current state. 2. Evaluator: the same LLM prompted differently to score each candidate thought as promising or not, replacing a hand-written heuristic. 3. Search algorithm: BFS, DFS, or best-first — decides which branches to expand next and which to prune, managing the exploration-exploitation tradeoff." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does Chain-of-Thought fail on the Game of 24 where Tree of Thoughts succeeds?", options: [
+    { text: "CoT commits to a single linear reasoning trajectory. If an early arithmetic step is incorrect, every subsequent step compounds the error and the model cannot backtrack. ToT maintains multiple candidate branches and prunes bad ones before they waste the entire token budget.", correct: true, explain: "The Game of 24 requires combining four numbers with arithmetic operations to reach 24. An incorrect early combination (e.g., wrong first operation) makes the remaining numbers impossible to combine correctly. CoT has no mechanism to try a different first move. ToT's branching + pruning allows it to abandon bad first moves and try alternatives." },
+    { text: "CoT uses greedy decoding while ToT uses beam search with temperature 0, which produces better token-level distributions for arithmetic tasks.", correct: false, explain: "The distinction is not about decoding strategy at the token level. ToT's advantage is at the reasoning-step level: it branches across multiple candidate thoughts (each a full reasoning step) and evaluates them as complete intermediate states, not individual tokens." },
+    { text: "CoT lacks an external knowledge base that ToT accesses to verify arithmetic facts, giving ToT more accurate intermediate computations.", correct: false, explain: "ToT does not use an external knowledge base. The evaluator is the same LLM prompted to judge whether a partial state looks promising — no lookup tables or arithmetic oracles are used. The advantage is tree search over reasoning states, not access to external facts." },
+  ]},
+  { prompt: "In Tree of Thoughts, the evaluator is implemented as a separate LLM with different weights from the thought generator. True or false?", options: [
+    { text: "False. The evaluator uses the same LLM as the thought generator, just with a different prompt. The paper explicitly designs evaluation prompts (e.g., 'Is this partial solution promising?') rather than training a separate model.", correct: true, explain: "This is one of ToT's elegant design choices: both generation and evaluation are done by the same base model via prompt engineering. The evaluator prompt asks the model to judge the quality of a partial state, which the model can do leveraging its world knowledge. No separate reward model needs to be trained." },
+    { text: "True. ToT trains a lightweight value network on top of the base LLM embeddings to produce fast scalar scores without an extra forward pass through the full LLM.", correct: false, explain: "No separate model is trained. The evaluator is purely prompting-based: the same LLM receives a 'value prompt' and produces a natural-language judgment or numeric score. This makes ToT broadly applicable without any task-specific training." },
+    { text: "True. The evaluator is a smaller distilled model fine-tuned on task-specific correctness labels to reduce inference cost during tree expansion.", correct: false, explain: "ToT is a training-free, prompting-only method. No fine-tuning of any model is performed. The evaluator prompt is designed by the researcher and run through the same base LLM." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+At a node `v` with partial solution `s`, the thought generator samples `k` candidate children:
+
+<Math display expr="\{c_1, \ldots, c_k\} \sim p_{\theta}^{\text{thought}}(\cdot \mid s)" />
+
+Each child is scored by the evaluator:
+
+<Math display expr="V(c_i) = p_{\theta}^{\text{value}}(\cdot \mid s,\, c_i)" />
+
+The frontier `F` is a priority queue of unexpanded nodes. At each iteration, the search selects the top-`T` nodes by score (beam search) or the single top node (best-first) and expands them. Define the beam at depth `d` as:
+
+<Math display expr="B_d = \operatorname{top}_T\!\bigl\{\, V(v) : v \in F,\; \text{depth}(v) = d \,\bigr\}" />
+
+Expanding `B_d` generates `k \cdot T` new candidates at depth `d+1`, each immediately scored, before the beam advances to depth `d+1`. DFS instead replaces best-first with a LIFO stack, ignoring `V` except for pruning hopeless branches.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does ToT use the LLM itself as the evaluator rather than a hand-written heuristic?",
+    options: [
+      { text: "A hand-written heuristic must be re-engineered for every new task and cannot generalize. The LLM evaluator inherits the model's world knowledge and can assess partial solutions in natural language for any task described in the prompt — including tasks the designer never anticipated.", correct: true, explain: "Consider a mini-crossword partial fill vs. a Game of 24 partial equation: these require completely different domain heuristics. Designing them by hand is expensive and brittle. The LLM evaluator simply receives a prompt like 'Rate the following partial crossword state on a scale of 1–10 with reasoning' and produces a score using the same reasoning abilities that make it useful as a thought generator. This generality is why ToT can be applied to diverse tasks without any task-specific training." },
+      { text: "A hand-written heuristic would require O(k^d) evaluations while the LLM evaluator runs in O(1) time using cached key-value pairs from the generation step.", correct: false, explain: "The LLM evaluator requires a full forward pass per node, which is expensive — not O(1). The advantage is generality and quality of evaluation, not computational efficiency. ToT actually requires more total compute than CoT precisely because it runs multiple evaluator calls." },
+      { text: "The LLM evaluator can be fine-tuned online during the search to improve its estimates as new nodes are explored, making it more accurate than any static heuristic.", correct: false, explain: "ToT does not fine-tune the evaluator online. Both the generator and evaluator are frozen at inference time. There is no weight update during the search. The advantage is the breadth of the pre-trained model's knowledge, not online adaptation." },
+    ],
+  }}
+  revealExpr="V(c_i) = p_{\theta}^{\text{value}}(\cdot \mid s,\, c_i) \;\Rightarrow\; \text{one prompt, any task}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does BFS often outperform DFS in the ToT experiments on Game of 24?",
+    options: [
+      { text: "BFS maintains width proportional to the beam size T across all branches simultaneously. If one branch hits a dead end, the beam still contains T-1 other promising branches to continue from. DFS commits fully to one branch at a time and may exhaust its budget on a bad subtree before exploring siblings.", correct: true, explain: "In the Game of 24 paper experiments, BFS with beam T=5 keeps the 5 most promising partial equations at each depth level. Even if the top-1 candidate proves unfruitful at the next step, the beam holds 4 alternatives. DFS with the same total budget may spend all of it going depth-first down the first high-scoring branch, missing the globally best solution that was waiting in a lower-scored sibling at depth 1." },
+      { text: "BFS processes nodes in parallel across the GPU batch dimension, while DFS is inherently sequential and cannot exploit hardware parallelism.", correct: false, explain: "While BFS does allow batching evaluator calls (all nodes at depth d can be evaluated together), this is an implementation advantage, not the reason BFS outperforms DFS in the paper's experiments. The algorithmic reason is diversity: BFS keeps multiple branches alive while DFS commits to one." },
+      { text: "BFS uses less total memory because it never stores nodes beyond the current depth, while DFS must keep the entire path from root to the current node on a stack.", correct: false, explain: "BFS actually uses more memory than DFS: it stores all nodes at the current depth, which can be exponential in the beam width. DFS only stores the current path (linear in depth). Memory is not the reason BFS outperforms DFS here." },
+    ],
+  }}
+  revealExpr="B_d = \operatorname{top}_T\{V(v)\} \Rightarrow T\text{ live branches vs DFS's 1}"
+/>
+
+<SrsCard id="tot-beam" paper="tot" prompt="Write the beam-selection equation for Tree of Thoughts at depth d." answer="B_d = top_T { V(v) : v in F, depth(v) = d } — the set of the T highest-scored unexpanded nodes at depth d. The beam size T controls the width-vs-budget tradeoff: larger T explores more branches but costs T times as many evaluator calls per depth level." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the ToT formulation, what is the role of p_theta^value compared to p_theta^thought?", options: [
+    { text: "p_theta^thought samples new partial-solution candidates from the current state. p_theta^value scores an existing partial-solution candidate to estimate how promising it is. Both use the same model weights theta but are conditioned on different prompts.", correct: true, explain: "The two roles are generation vs. evaluation. The thought prompt might say 'Given partial solution s, propose k next reasoning steps.' The value prompt might say 'Given partial solution s and candidate c, rate whether c leads toward the goal on a scale of sure/likely/impossible.' Different prompts, same model, different conditional distributions." },
+    { text: "p_theta^thought generates tokens autoregressively while p_theta^value is a discriminative classifier head added on top of the transformer's final layer embedding.", correct: false, explain: "No classifier head is added. p_theta^value is purely prompting-based — the model generates a natural-language score or judgment. ToT requires no architectural changes to the base LLM." },
+    { text: "p_theta^value is updated by gradient descent on the evaluator's scoring accuracy while p_theta^thought remains frozen, forming a two-component online learning system.", correct: false, explain: "Neither component is updated during inference. ToT is a training-free method. Both distributions are the same frozen model used with different prompts." },
+  ]},
+  { prompt: "The Game of 24 requires combining 4 numbers with +, -, *, / to reach 24. How does ToT's structure map onto this problem?", options: [
+    { text: "Each 'thought' is one arithmetic operation applied to the current set of numbers, reducing the count by one. The evaluator judges whether the remaining numbers can plausibly reach 24. The tree has at most 3 depth levels (4 numbers → 3 numbers → 2 numbers → 1 number = 24).", correct: true, explain: "At depth 0: four numbers. After one thought (one operation on two of them): three numbers remain. After two thoughts: two numbers. After three thoughts: one number, which should equal 24. The evaluator at each depth estimates whether the remaining set is still solvable. This clean decomposition is why ToT is so effective: the intermediate states are well-defined and the evaluator has a concrete task." },
+    { text: "ToT generates all possible operation sequences in parallel and ranks them by final answer correctness, using the tree only as a bookkeeping structure for the batch.", correct: false, explain: "ToT does not enumerate all sequences exhaustively. The point of the tree search is to prune unpromising branches early before fully evaluating them, saving tokens compared to exhaustive enumeration. The evaluator runs at intermediate depths, not just at the final answer." },
+    { text: "The tree depth corresponds to the number of candidate answers generated (not intermediate steps), and the evaluator compares them pairwise to select the best.", correct: false, explain: "Tree depth corresponds to problem-solving steps, not to the number of final candidates. Each node is a partial state of the problem (a set of remaining numbers), not a complete candidate answer." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of the best-first ToT search loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Initialize frontier F = [(0.0, root_state)]; set budget = max_expansions",
+  "Pop the highest-scored node (score, state) from F",
+  "Generate k candidate thoughts: children = thought_generator(state, k)",
+  "Score each child: scored = [(value(state, c), c) for c in children]",
+  "Push scored children into F; decrement budget; repeat until goal found or budget exhausted",
+]} />
+
+Fill in the blank — the line that extracts the top node from the frontier:
+
+```text
+def best_first_step(frontier):
+    frontier_sorted = sorted(frontier, key=V, reverse=True)
+    best = _______
+    remaining = frontier_sorted[1:]
+    return best, remaining
+```
+
+<FillBlank answer="frontier_sorted[0]" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the ToT pseudo code, why is the evaluator called on each child immediately after generation rather than lazily when the child is popped from the frontier?", options: [
+    { text: "Immediate scoring allows the priority queue to order all children correctly before any of them are popped. If scoring were deferred, children would be inserted with unknown priority and the frontier would not be sorted correctly.", correct: true, explain: "A priority queue's ordering depends on the score at insertion time. If you insert with score 0 (unknown) and score later, the queue ordering is wrong. Scoring at generation time means every node in the frontier has a valid V estimate, so the pop operation always retrieves the globally most promising unexpanded node." },
+    { text: "Immediate scoring is cheaper because the evaluator can reuse the key-value cache from the thought generator, which is still hot in GPU memory.", correct: false, explain: "While caching might provide a minor implementation speedup, this is not the algorithmic reason for immediate scoring. The correctness reason is that the priority queue requires valid scores at insertion time to maintain its ordering invariant." },
+    { text: "Lazy scoring would cause duplicate evaluations: the same child might be generated by multiple parents and would be scored each time it is popped, wasting compute.", correct: false, explain: "Deduplication is a separate concern. The reason for immediate scoring is queue-ordering correctness, not avoiding duplicates. Duplicate generated thoughts are typically handled by a visited set, independent of when scoring occurs." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement **best-first node selection** in Python. Given a frontier as a list of `(score, node_id)` tuples, return `(popped_node_id, remaining_frontier)` where `popped_node_id` is the id of the highest-scored node and `remaining_frontier` is the list without that node.
+
+<HintFade client:load
+  hints={[
+    "Sort the frontier by score in descending order so the highest-scored node is first. Use the built-in `sorted()` with `key=lambda x: x[0]` and `reverse=True`.",
+    "After sorting, the first element `sorted_frontier[0]` is the best node. Extract its node_id with `sorted_frontier[0][1]`. The remaining frontier is `sorted_frontier[1:]`.",
+    "Full solution: `sorted_f = sorted(frontier, key=lambda x: x[0], reverse=True); return sorted_f[0][1], sorted_f[1:]`. Handle edge case: if frontier has one element, remaining is an empty list.",
+  ]}
+  solutionCode={`def best_first_pop(frontier):
+    """
+    frontier: list of (score, node_id) tuples
+    Returns:  (node_id_of_best, remaining_frontier)
+    """
+    if not frontier:
+        raise ValueError("Cannot pop from empty frontier")
+    sorted_f = sorted(frontier, key=lambda x: x[0], reverse=True)
+    best_id = sorted_f[0][1]
+    remaining = sorted_f[1:]
+    return best_id, remaining`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`def best_first_pop(frontier):
+    """
+    frontier: list of (score, node_id) tuples
+    Returns:  (node_id_of_best, remaining_frontier)
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity check
+frontier = [(0.4, "A2"), (0.7, "A1"), (0.1, "A3")]
+node_id, remaining = best_first_pop(frontier)
+if node_id is not None:
+    print(f"Popped: {node_id}")
+    print(f"Remaining: {remaining}")
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`def best_first_pop(frontier):
+    if not frontier:
+        raise ValueError("Cannot pop from empty frontier")
+    sorted_f = sorted(frontier, key=lambda x: x[0], reverse=True)
+    best_id = sorted_f[0][1]
+    remaining = sorted_f[1:]
+    return best_id, remaining
+`}
+  testCode={`def best_first_pop(frontier):
+    if not frontier:
+        raise ValueError("Cannot pop from empty frontier")
+    sorted_f = sorted(frontier, key=lambda x: x[0], reverse=True)
+    best_id = sorted_f[0][1]
+    remaining = sorted_f[1:]
+    return best_id, remaining
+
+# Test 1: correctly picks max-score node
+frontier = [(0.4, "A2"), (0.7, "A1"), (0.1, "A3")]
+node_id, remaining = best_first_pop(frontier)
+assert node_id == "A1", f"Expected A1, got {node_id}"
+
+# Test 2: returns frontier minus the popped node (2 elements remain)
+assert len(remaining) == 2, f"Expected 2 remaining, got {len(remaining)}"
+remaining_ids = [r[1] for r in remaining]
+assert "A1" not in remaining_ids, "A1 should not be in remaining"
+assert "A2" in remaining_ids and "A3" in remaining_ids, f"Remaining should be A2 and A3, got {remaining_ids}"
+
+# Test 3: handles single-node frontier
+single = [(0.9, "B1")]
+node_id2, remaining2 = best_first_pop(single)
+assert node_id2 == "B1", f"Expected B1, got {node_id2}"
+assert remaining2 == [], f"Expected empty remaining, got {remaining2}"
+
+# Test 4: ties broken deterministically (both with 0.7)
+tied = [(0.7, "X"), (0.7, "Y"), (0.2, "Z")]
+node_id3, remaining3 = best_first_pop(tied)
+assert node_id3 in ("X", "Y"), f"Expected X or Y for tie, got {node_id3}"
+assert len(remaining3) == 2
+
+# Test 5: highest score is last in input list
+reversed_f = [(0.1, "low"), (0.5, "mid"), (0.9, "high")]
+node_id4, _ = best_first_pop(reversed_f)
+assert node_id4 == "high", f"Expected high, got {node_id4}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The best_first_pop function uses sorted() and returns sorted_f[1:] as the remaining frontier. What is the time complexity of this operation relative to frontier size n?", options: [
+    { text: "O(n log n) for the sort plus O(n) for the slice, so O(n log n) overall. For a typical ToT search with small beam size T (e.g., T=5), this is negligible compared to the O(n) LLM evaluator calls.", correct: true, explain: "Python's Timsort is O(n log n). The slice is O(n) for list construction. In practice, the frontier is small (at most T nodes at any depth for beam search) so the sort is fast. The real bottleneck is LLM inference for thought generation and evaluation, not the frontier management." },
+    { text: "O(1) because Python lists support O(1) maximum-element lookup via a hidden max-heap data structure maintained internally.", correct: false, explain: "Python lists do not maintain a heap internally. sorted() on a list is O(n log n). If O(1) pop-max were needed, you would use the heapq module with negated scores (Python's heapq is a min-heap). For small frontiers, sorted() is simpler and fast enough." },
+    { text: "O(n^2) because sorted() must compare every pair of elements to determine the global order.", correct: false, explain: "Comparison-based sorting is O(n log n) in the worst case, not O(n^2). Python's Timsort achieves O(n) on already-sorted inputs and O(n log n) worst-case, never O(n^2)." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2305.10601.pdf" title="Tree of Thoughts: Deliberate Problem Solving with Large Language Models (Yao et al. 2023)" />
+
+Suggested reading order: §1 (Introduction — motivation from CoT's single-trajectory limitation) → §2 (Tree of Thoughts framework — thought generator, evaluator, and search algorithms) → §3 (Experiments — Game of 24, creative writing, mini-crosswords benchmarks).
+
+</StageSection>
