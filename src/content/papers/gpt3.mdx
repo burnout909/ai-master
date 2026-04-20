@@ -1,0 +1,232 @@
+---
+slug: gpt3
+title: "Language Models are Few-Shot Learners"
+authors: "Brown et al."
+year: 2020
+era: transformer
+arxivId: "2005.14165"
+estimatedMinutes: 50
+prerequisites: ["transformer", "gpt2"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { FewShotScale } from "../../components/widgets/FewShotScale.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+GPT-2 showed that a large decoder-only language model could do useful things zero-shot. GPT-3 pushed that idea to an extreme: **175 billion parameters** trained on **300 billion tokens** drawn from Common Crawl, WebText2, Books, and Wikipedia. At this scale, something qualitatively new emerges — **in-context learning**.
+
+In-context learning means the model can "learn" a new task purely from examples placed in its prompt, with **zero gradient updates**. Show it two English→French pairs and a new English phrase, and it translates. Show it three arithmetic examples and a new equation, and it solves it. The weights never change; the "learning" is entirely a forward pass conditioned on the context.
+
+The critical lesson from GPT-3 is that this emergent ability is **scale-dependent**. Small models (1B params) show nearly no few-shot gains. Above roughly 6B, few-shot accuracy rises sharply. At 175B, GPT-3 matches or beats fine-tuned smaller models on many NLP benchmarks without a single gradient step on those tasks.
+
+**Interact with the widget:** start with shots=0 and log₁₀(params)=8. Observe the low baseline accuracy. Now slide log₁₀(params) up past 9.5 — accuracy rises, but slowly. Then set shots to 3 or 5 and repeat: the curve lifts noticeably only at large scale. Few-shot in-context learning unlocks at roughly 6B+ parameters (log₁₀ ≈ 9.8).
+
+<FewShotScale client:load />
+
+<PredictThenReveal client:load predictPrompt="Why does in-context learning get better as model size increases, even though no gradient updates happen? What does the model need to 'have' to learn from a few prompt examples?">
+  A model doing in-context learning must already know the relevant concepts from pretraining. With few examples in the prompt, it must recognize the task, map inputs to outputs according to demonstrated examples, and generalize the pattern. Smaller models lack the capacity to store and compose fine-grained world knowledge, so they cannot extract the task signal from the prompt reliably. Larger models have seen more patterns, stored richer representations, and have enough capacity to perform implicit Bayesian updating over their prior — all within the forward pass.
+</PredictThenReveal>
+
+<SrsCard id="gpt3-in-context" paper="gpt3" prompt="What is in-context learning in GPT-3, and how many gradient updates does it use at inference time?" answer="In-context learning places k labeled examples (demonstrations) directly in the prompt before a new query. The model conditions on these examples and produces the answer autoregressively. Zero gradient updates occur — it is a pure forward pass. The 'learning' is implicit Bayesian inference over patterns seen during pretraining." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "GPT-3 uses 175B parameters trained on 300B tokens. What dataset contributed the largest portion of training tokens?", options: [
+    { text: "Common Crawl (filtered): ~60% of training tokens after quality filtering", correct: true, explain: "Common Crawl is a massive web crawl. After language ID and quality filtering, it contributed roughly 60% of GPT-3's training mixture by tokens, far more than any other source." },
+    { text: "Wikipedia: the highest-quality source, so it was weighted to ~60%", correct: false, explain: "Wikipedia was upsampled (3× over its raw count) but still accounts for only a few percent of total tokens. Quality was weighted by upsampling, not raw volume." },
+    { text: "Books corpora: long-form text was prioritized above all web data", correct: false, explain: "Books1 and Books2 together account for roughly 16% of training tokens. Common Crawl dominates by volume." },
+  ]},
+  { prompt: "What distinguishes 'zero-shot', 'one-shot', and 'few-shot' prompting for GPT-3?", options: [
+    { text: "Zero-shot: task description only; one-shot: one example; few-shot: k examples (k up to ~100 for GPT-3)", correct: true, explain: "GPT-3 evaluates all three regimes. Zero-shot provides only a natural language instruction. One-shot adds one (input, output) demonstration. Few-shot (k-shot) adds k demonstrations before the query." },
+    { text: "Zero-shot means no prompt; one-shot means one gradient update; few-shot means a full fine-tuning run", correct: false, explain: "None of these settings involve gradient updates. The distinction is purely in the number of labeled examples placed in the prompt context." },
+    { text: "Few-shot always outperforms fine-tuning because gradient updates overfit", correct: false, explain: "Fine-tuned smaller models often beat GPT-3 few-shot on specific benchmarks. Few-shot is competitive without any fine-tuning, but it does not universally dominate fine-tuning." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+GPT-3's training objective is standard autoregressive language modeling — predict each token given all preceding tokens:
+
+<Math display expr="L = -\sum_{t=1}^{T} \log p_\theta(x_t \mid x_1, \ldots, x_{t-1})" />
+
+At inference time, **few-shot prompting** is pure prompt-conditioning. Given k demonstrations and a query, the model scores:
+
+<Math display expr="p_\theta(y \mid x_1, y_1, \ldots, x_k, y_k, x_{\text{query}})" />
+
+No parameter updates. The prompt acts as a soft specification of the task distribution.
+
+**Scaling laws** (Kaplan et al. 2020, developed alongside GPT-3) describe how the optimal loss scales with model size N when compute budget is fixed:
+
+<Math display expr="L(N) \approx \left(\frac{N_c}{N}\right)^{\alpha}" />
+
+where N_c is a critical parameter count and alpha is approximately 0.076 for language modeling. Doubling parameters improves loss, but with diminishing returns. This law motivated training a single 175B model rather than many smaller models.
+
+<DerivationStep client:load
+  question={{
+    prompt: "GPT-3 was trained with batch size 3.2M tokens. At 175B parameters, roughly how many FLOPs does a single forward+backward pass consume? (Use the rule of thumb: ~6N FLOPs per token for a transformer, where N = number of parameters.)",
+    options: [
+      { text: "~6 × 175×10⁹ × 3.2×10⁶ ≈ 3.4×10²¹ FLOPs per gradient step", correct: true, explain: "The 6N rule accounts for ~2N FLOPs forward and ~4N backward (gradients + activations). With N=175B and batch=3.2M tokens: 6 × 1.75×10¹¹ × 3.2×10⁶ ≈ 3.4×10²¹ FLOPs. GPT-3 total training was ~3.1×10²³ FLOPs." },
+      { text: "~N × batch = 175×10⁹ × 3.2×10⁶ ≈ 5.6×10²⁰ FLOPs — just one multiply per weight per token", correct: false, explain: "You need ~6 FLOPs per parameter per token (2 for forward matmul, 4 for backward). The 1× rule undercounts by 6×." },
+      { text: "~2N × batch = 1.1×10²¹ FLOPs — two passes (forward + backward)", correct: false, explain: "The backward pass is roughly 2× the forward, so total is ~6N not 2N per token." },
+    ],
+  }}
+  revealExpr="6 \times N \times B_{\text{tokens}} \approx 6 \times 1.75 \times 10^{11} \times 3.2 \times 10^6 \approx 3.4 \times 10^{21} \text{ FLOPs}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Few-shot prompting vs. fine-tuning: how many gradient updates does GPT-3 few-shot inference require for a new task?",
+    options: [
+      { text: "Zero gradient updates — few-shot is a pure forward pass; all 'learning' from examples is implicit in the attention over the prompt context", correct: true, explain: "The k examples are prepended to the query. GPT-3 runs a single forward pass and produces the answer. The model weights theta are frozen throughout. There is no optimizer step, no loss computed on the demonstrations." },
+      { text: "One gradient update per demonstration example — the model does online learning", correct: false, explain: "GPT-3 few-shot uses no gradient updates at all. Online learning would modify the weights; GPT-3 inference never does." },
+      { text: "k gradient updates, one per shot — that is why more shots improve performance", correct: false, explain: "Performance improves with more shots because more context guides the forward pass, not because weights are updated. The model sees more examples and can better infer the task pattern." },
+    ],
+  }}
+  revealExpr="\nabla_\theta = \mathbf{0} \text{ (frozen weights)} \quad \Rightarrow \quad \text{few-shot} = \text{forward pass only}"
+/>
+
+<SrsCard id="gpt3-scaling-law" paper="gpt3" prompt="Write the Kaplan scaling law for loss as a function of model size N, and state what the exponent alpha is approximately." answer="L(N) ≈ (N_c/N)^alpha where alpha ≈ 0.076 for language modeling. Loss decreases as a power law in N; doubling parameters always helps but with diminishing returns." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "According to the Kaplan scaling law L(N) ≈ (N_c/N)^α, what does doubling the number of parameters N do to the loss?", options: [
+    { text: "Reduces loss by a factor of 2^α ≈ 2^0.076 ≈ 1.054, i.e. roughly a 5% improvement in loss", correct: true, explain: "L(2N)/L(N) = (N_c/2N)^α / (N_c/N)^α = (1/2)^α = 2^{-0.076} ≈ 0.949. Loss drops by ~5%. Each doubling gives the same multiplicative improvement — diminishing returns on absolute scale." },
+    { text: "Halves the loss — a linear improvement per doubling", correct: false, explain: "Halving would mean alpha=1. With alpha≈0.076, the improvement per doubling is much smaller — around 5%." },
+    { text: "Has no predictable effect — loss improvement is random and depends on training details", correct: false, explain: "Scaling laws are remarkably smooth and predictable. The power-law relationship holds over many orders of magnitude in parameter count." },
+  ]},
+  { prompt: "In GPT-3 few-shot inference, what role does the prompt play mathematically?", options: [
+    { text: "The prompt conditions the likelihood p(y | prompt, query): each demonstration shifts the prior over task distributions without updating weights", correct: true, explain: "The prompt is concatenated with the query and passed as context. The model's autoregressive distribution is conditioned on all prefix tokens. This is a soft form of Bayesian conditioning — demonstrations steer which 'task mode' the model operates in." },
+    { text: "The prompt is used to compute a gradient that temporarily shifts the model's activations", correct: false, explain: "No gradient is computed at inference. The prompt is just tokens that become keys and values in the attention layers." },
+    { text: "The prompt is discarded after the first transformer layer — only the query matters for generation", correct: false, explain: "The prompt tokens persist as key-value pairs through all attention layers, conditioning every step of generation." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the steps of GPT-3 few-shot inference in the correct order:
+
+<LineReorder client:load lines={[
+  "Collect k demonstration pairs (x_1, y_1), ..., (x_k, y_k) for the task",
+  "Concatenate demonstrations and query into a single prompt string",
+  "Tokenize the full prompt into token IDs",
+  "Run a forward pass through all 96 transformer decoder layers",
+  "Sample or argmax from the output distribution to get the predicted answer",
+]} />
+
+Fill the blank in the few-shot prompt construction pseudocode:
+
+```text
+def build_kshot_prompt(examples, query, separator='\n'):
+    parts = [f"{x} {y}" for x, y in examples]
+    return ______
+```
+
+<FillBlank answer="separator.join(parts) + separator + query" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the few-shot pseudocode above, why do we append the query after the separator at the end?", options: [
+    { text: "The model generates the answer as a continuation of the prompt; the query must be the last thing in context so the next token is the predicted answer", correct: true, explain: "GPT-3 is autoregressive: it predicts what comes after the entire prompt. Placing the query last means the model's first generated token is the answer to that query, conditioned on all preceding demonstrations." },
+    { text: "The separator at the end forces the model to output a newline, which is required for parsing", correct: false, explain: "The separator's purpose is to visually distinguish examples, not to enforce output format. The query is last because the model generates its continuation." },
+    { text: "The query is appended last to compute the cross-entropy loss over just the query tokens", correct: false, explain: "At inference time there is no loss computation. The query-last ordering is about autoregressive generation, not loss masking." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a function `build_kshot_prompt(examples, query, separator)` that constructs a k-shot prompt string. Each example is a `(input_str, output_str)` tuple. The prompt should interleave examples with the separator, then append the query at the end separated by the same separator. Verify that the output contains both examples, the query, and that prompt length grows with k.
+
+<HintFade client:load
+  hints={[
+    "Start by formatting each (x, y) pair as a single string. Then join all formatted examples with the separator, and finally append the separator and query at the end.",
+    "Use a list comprehension to create formatted parts: [f'{x} {y}' for x, y in examples]. Then use str.join to combine them, and add separator + query at the end.",
+    "Full solution: parts = [f'{x} {y}' for x, y in examples]; return separator.join(parts) + separator + query",
+  ]}
+  solutionCode={`def build_kshot_prompt(examples, query, separator='\\n'):
+    parts = [f"{x} {y}" for x, y in examples]
+    return separator.join(parts) + separator + query`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`def build_kshot_prompt(examples, query, separator='\\n'):
+    # TODO: construct the k-shot prompt
+    # examples: list of (input_str, output_str) tuples
+    # query: the new input to answer
+    # separator: string between each part
+    pass
+
+# Test manually
+examples_0 = []
+examples_2 = [("cat -> chat", ""), ("dog -> chien", "")]
+query = "bird ->"
+
+print("0-shot:", repr(build_kshot_prompt(examples_0, query)))
+print("2-shot:", repr(build_kshot_prompt(examples_2, query)))
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`def build_kshot_prompt(examples, query, separator='\\n'):
+    parts = [f"{x} {y}" for x, y in examples]
+    return separator.join(parts) + separator + query
+`}
+  testCode={`# Test 1: query appears in output
+examples = [("cat -> chat", ""), ("dog -> chien", "")]
+query = "bird ->"
+prompt = build_kshot_prompt(examples, query)
+assert query in prompt, f"Query must appear in prompt, got: {repr(prompt)}"
+
+# Test 2: both examples appear in output
+assert "cat -> chat" in prompt, "First example must appear in prompt"
+assert "dog -> chien" in prompt, "Second example must appear in prompt"
+
+# Test 3: more shots = longer prompt
+prompt_0 = build_kshot_prompt([], query)
+prompt_1 = build_kshot_prompt([("a b", "")], query)
+prompt_2 = build_kshot_prompt([("a b", ""), ("c d", "")], query)
+assert len(prompt_0) < len(prompt_1) < len(prompt_2), "Prompt length must grow with k"
+
+# Test 4: custom separator is used
+prompt_sep = build_kshot_prompt([("Q: 1+1? A: 2", "")], "Q: 2+2?", separator="|||")
+assert "|||" in prompt_sep, "Custom separator must appear in prompt"
+
+# Test 5: 0-shot prompt is just separator + query
+prompt_zero = build_kshot_prompt([], "hello", separator="\\n")
+assert prompt_zero == "\\nhello" or prompt_zero == "hello", f"0-shot should be separator+query or just query, got {repr(prompt_zero)}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In a k-shot prompt, why do we include both the input AND output of each demonstration example (not just the input)?", options: [
+    { text: "The model learns the input→output mapping from the demonstrations; seeing the output tells it what format and content to produce for the query", correct: true, explain: "The core of in-context learning is showing the model (input, output) pairs that define the task. Without outputs, the model cannot infer what transformation to apply. The output in each demonstration is the 'label' the model learns from." },
+    { text: "Including the output increases the prompt length, giving the model more tokens to attend to", correct: false, explain: "Longer prompts are a side effect, not the purpose. The outputs carry the task-specific signal that enables in-context learning." },
+    { text: "The outputs are masked during generation so they don't actually affect the model's predictions", correct: false, explain: "Demonstration outputs are fully visible in the attention context during generation. They are not masked — the model attends to them when generating the answer to the query." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2005.14165.pdf" title="GPT-3: Language Models are Few-Shot Learners" />
+
+Suggested reading order: §1 (Introduction — motivation for in-context learning and scale) → §2.1 (Approach / In-Context Learning — formal definition of zero/one/few-shot) → §3.1 (Results on NLP benchmarks — few-shot vs. fine-tuned baselines).
+
+</StageSection>
