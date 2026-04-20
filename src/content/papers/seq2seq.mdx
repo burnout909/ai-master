@@ -1,0 +1,295 @@
+---
+slug: seq2seq
+title: "Sequence to Sequence Learning with Neural Networks"
+authors: "Sutskever, Vinyals, Le"
+year: 2014
+era: foundations
+arxivId: "1409.3215"
+estimatedMinutes: 40
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { Seq2SeqTrace } from "../../components/widgets/Seq2SeqTrace.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before seq2seq, neural machine translation was largely handled by phrase-based statistical models — pipelines of hand-tuned components that decomposed sentences into fragments, translated each fragment, and stitched them back together. These systems were complex, brittle, and required extensive feature engineering for each language pair.
+
+**Sutskever, Vinyals, and Le's key insight:** a single end-to-end trained LSTM can map a variable-length source sequence to a variable-length target sequence by first **encoding** the entire source into one fixed-size vector **v** (the final hidden state), then **decoding** from that vector token by token. No phrase tables, no alignment models — just two RNNs and a training objective. The paper also uncovered a surprising empirical trick: **reversing the source sequence** boosted BLEU by ~5 points. When the source is reversed, the first source words (which must align to the first target words) end up at the end of the encoding trajectory — just a few LSTM steps from where decoding begins. Shorter "temporal distance" makes the gradient path shorter and alignment easier.
+
+<PredictThenReveal client:load predictPrompt="Before playing with the widget: if the source is 'the cat sat' and the target starts with 'le', which source token should ideally be closest in LSTM-time to the start of decoding? Type your prediction.">
+  **'the'** — it is the first source token and must align to the first target token 'le'. In the normal (non-reversed) order, 'the' is processed first and its signal must survive T_src − 1 LSTM steps before decoding starts. Reversing puts 'the' last, so only 1 LSTM step separates its encoding from the first decoder step. This is the geometric intuition behind the reversal trick.
+</PredictThenReveal>
+
+Adjust the source length and toggle reversal. Watch how the retention bar for the first source word changes.
+
+<Seq2SeqTrace client:load />
+
+<PredictThenReveal client:load predictPrompt="With the source reversed (checkbox checked) and length set to 6, where does the first source word appear relative to the final encoder step? How does this affect the gradient path during backprop-through-time?">
+  **When reversed, the first source word is at distance 0 from the final encoder step** — it is the very last token the encoder sees. During backpropagation-through-time, the gradient from the first decoder output to the encoding of the first source word travels through only a handful of steps instead of T_src − 1 steps. Shorter BPTT paths suffer less from vanishing gradients, making it easier for the model to learn that the first source word should influence the first target word.
+</PredictThenReveal>
+
+<SrsCard id="seq2seq-reversal-trick" paper="seq2seq" prompt="Why does reversing the source sequence improve seq2seq translation quality, and roughly how much BLEU improvement did Sutskever et al. observe?" answer="Reversing brings the first source words (which align to the first target words) close in LSTM-time to the start of decoding. Shorter temporal distance means shorter BPTT gradient paths and less vanishing gradient. The paper reported ~5 BLEU-point improvement on English→French." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the 'fixed-vector bottleneck' in the original seq2seq model?", options: [
+    { text: "The entire source sentence is compressed into a single hidden state v of fixed dimension, regardless of source length", correct: true, explain: "v = h_{T_src} is a d-dimensional vector. For long sentences, earlier tokens must survive many LSTM steps; their signal can be overwritten by later tokens. Bahdanau attention later addressed this." },
+    { text: "The vocabulary embedding matrix has a fixed size that limits coverage", correct: false, explain: "Vocabulary size is a separate design choice. The bottleneck refers to the single summary vector v, not the embedding table." },
+    { text: "The beam search width is fixed at inference time", correct: false, explain: "Beam width is an inference hyperparameter; it does not constrain what information is encoded." },
+  ]},
+  { prompt: "Why does reversing the source sequence reduce the 'minimal time lag' between source and target words?", options: [
+    { text: "After reversal, the first source token is encoded last, placing it at temporal distance ~1 from the first decoder step", correct: true, explain: "In normal order, token 1 is distance T_src−1 LSTM steps away from decoding. Reversed, it is distance 0 or 1. Since the first source/target tokens must align, this shortens the gradient path for that critical pairing." },
+    { text: "Reversal causes the LSTM to process tokens in parallel, reducing computation time", correct: false, explain: "LSTMs are sequential by nature; reversal does not enable parallelism. The benefit is gradient path length, not wall-clock speed." },
+    { text: "Reversal doubles the effective hidden-state dimension seen by the decoder", correct: false, explain: "Reversal is purely a data preprocessing step; it does not change model architecture or dimensions." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The seq2seq model defines a conditional probability over the target sequence given the source. The encoder reads source tokens <Math expr="x_1, \ldots, x_{T_{\text{src}}}" /> and produces a single summary vector:
+
+<Math display expr="v = h_{T_{\text{src}}}^{\text{enc}}" />
+
+The decoder then factorises the joint target probability using the chain rule:
+
+<Math display expr="p(y_1, \ldots, y_{T_{\text{tgt}}} \mid x_1, \ldots, x_{T_{\text{src}}}) = \prod_{t=1}^{T_{\text{tgt}}} p\!\left(y_t \mid v,\, y_1, \ldots, y_{t-1}\right)" />
+
+Each factor <Math expr="p(y_t \mid v, y_{<t})" /> is computed by a softmax over the vocabulary applied to the decoder hidden state <Math expr="h_t^{\text{dec}}" />, which evolves as:
+
+<Math display expr="h_t^{\text{dec}} = \text{LSTM}\!\left(h_{t-1}^{\text{dec}},\, [y_{t-1};\, v]\right)" />
+
+Training maximises the log-likelihood over all sentence pairs <Math expr="(X, Y)" /> in the corpus:
+
+<Math display expr="\mathcal{L} = \sum_{(X,Y)} \sum_{t=1}^{T_{\text{tgt}}} \log p\!\left(y_t \mid v,\, y_{<t}\right)" />
+
+At inference time, **beam search** maintains the top-B partial hypotheses at each step, expanding each by all vocabulary tokens and retaining only the B highest-probability continuations.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why can the joint probability p(y_1,…,y_T | x_1,…,x_T_src) be written as a product of conditionals?",
+    options: [
+      { text: "It follows from the chain rule of probability: p(y_1,…,y_T) = Π_t p(y_t | y_1,…,y_{t-1}) for any joint distribution", correct: true, explain: "The chain rule decomposes any joint distribution exactly into a product of conditionals. The model then parameterises each factor with an LSTM conditioned on v and previous outputs. No independence assumption is needed — this is exact." },
+      { text: "The tokens y_t are conditionally independent given v", correct: false, explain: "If tokens were independent given v, the product would collapse to Π_t p(y_t | v) with no dependence on y_{<t}. The model explicitly conditions on y_{<t} precisely because tokens are NOT independent." },
+      { text: "The LSTM Markov property makes all earlier tokens irrelevant beyond the hidden state", correct: false, explain: "The Markov property of the LSTM means h_t summarises the history, but the mathematical factorisation follows from the chain rule, not from Markov structure." },
+    ],
+  }}
+  revealExpr="p(y_1,\ldots,y_T \mid v) = \prod_{t=1}^{T} p(y_t \mid v,\, y_1,\ldots,y_{t-1}) \quad \text{(chain rule)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Beam search with width B=1 is equivalent to which simpler algorithm?",
+    options: [
+      { text: "Greedy decoding — always pick the single highest-probability next token", correct: true, explain: "With B=1, beam search keeps only one hypothesis at each step and extends it with the single most likely token. This is exactly greedy decoding. B>1 trades compute for better exploration of the hypothesis space." },
+      { text: "Viterbi decoding — dynamic programming over all possible sequences simultaneously", correct: false, explain: "Viterbi considers all paths but runs in O(V·T) via DP. Beam search approximates this; B=1 gives greedy, not Viterbi." },
+      { text: "Random sampling — draw y_t ~ p(y_t | v, y_{<t}) at each step", correct: false, explain: "Greedy decoding takes the argmax, not a sample. Random sampling would select tokens proportional to probability, which differs from argmax for any non-uniform distribution." },
+    ],
+  }}
+  revealExpr="B=1:\; y_t = \arg\max_{y} p(y \mid v,\, y_{<t}) \quad \text{(greedy decoding)}"
+/>
+
+<SrsCard id="seq2seq-chain-rule" paper="seq2seq" prompt="Write the seq2seq factorisation of p(y_1,…,y_T | v) and name the mathematical identity that justifies it." answer="p(y_1,…,y_T | v) = Π_t p(y_t | v, y_1,…,y_{t-1}). This follows from the chain rule of probability, which is an exact identity for any joint distribution. No independence assumption is made." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In seq2seq training, what quantity is maximised?", options: [
+    { text: "The log-likelihood Σ_{(X,Y)} Σ_t log p(y_t | v, y_{<t}) over all training pairs", correct: true, explain: "This is standard maximum-likelihood training for a conditional language model. The log converts the product of probabilities into a sum, which is numerically stable and easy to differentiate." },
+    { text: "The BLEU score on the training set", correct: false, explain: "BLEU is non-differentiable and is used only for evaluation. Training uses differentiable log-likelihood." },
+    { text: "The negative KL divergence between source and target hidden states", correct: false, explain: "No KL term appears in the standard seq2seq objective. KL appears in VAEs and variational models." },
+  ]},
+  { prompt: "What is v in the seq2seq model?", options: [
+    { text: "The encoder's final hidden state h_{T_src}, used as the sole input context for the decoder", correct: true, explain: "v = h_{T_src}^enc summarises the entire source. The decoder initial hidden state is set to v, and v may also be concatenated to each decoder input." },
+    { text: "A learned embedding vector for the source language", correct: false, explain: "Language embeddings are a different concept (e.g., language ID vectors). v is a sentence-level summary, not a language-level parameter." },
+    { text: "The average of all encoder hidden states", correct: false, explain: "That would be mean-pooling, which is different from using the final state. Bahdanau later replaced v with a dynamic weighted sum, but seq2seq uses only the final state." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of the seq2seq encoder–decoder algorithm in the correct order:
+
+<LineReorder client:load lines={[
+  "Optionally reverse the source token list: src = src[::-1]",
+  "Run encoder RNN step-by-step over src tokens → hidden states h_1^enc … h_T^enc",
+  "Extract the final encoder hidden state v = h_T^enc",
+  "Initialise decoder hidden state h_0^dec = v; set input y_0 = <BOS>",
+  "At each decoder step t: compute h_t^dec = RNN(h_{t-1}^dec, [y_{t-1}; v]); output y_t = argmax softmax(W h_t^dec)",
+]} />
+
+Fill the blank in this pseudo code for the decoder loop:
+
+```text
+def greedy_decode(v, W_out, rnn, max_steps):
+    h = v
+    y = BOS_ID
+    outputs = []
+    for _ in range(max_steps):
+        h = rnn(h, embed(y))
+        logits = W_out @ h
+        y = _______        # ← fill: pick next token
+        if y == EOS_ID:
+            break
+        outputs.append(y)
+    return outputs
+```
+
+<FillBlank answer="argmax(logits)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "During teacher forcing, what is fed as the decoder input at each step?", options: [
+    { text: "The ground-truth target token y_{t-1} from the training pair, not the model's own prediction", correct: true, explain: "Teacher forcing uses the gold label as the next input regardless of what the model predicted. This stabilises training but creates an exposure-bias mismatch with inference, where the model must condition on its own (potentially wrong) outputs." },
+    { text: "The model's predicted token ŷ_{t-1} from the previous step", correct: false, explain: "That is scheduled sampling or autoregressive decoding. Teacher forcing feeds the gold target, not the model's prediction." },
+    { text: "The context vector v re-computed at each step using attention", correct: false, explain: "In vanilla seq2seq there is no per-step attention; v is fixed. In Bahdanau's extension, a fresh context vector is computed each step." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a greedy seq2seq decoder in pure Python / NumPy. You are given a toy single-layer RNN cell <Math expr="h_t = \tanh(W_h h_{t-1} + U_e e_t)" />, a readout matrix <Math expr="W_{\text{out}}" />, and an encoder context vector `v`. Complete the `greedy_decode` function so it runs for exactly `n_steps` steps and returns the list of predicted token indices.
+
+<HintFade client:load
+  hints={[
+    "At each step, compute h = np.tanh(W_h @ h + U_e @ e) where e is the embedding of the previous output token.",
+    "After updating h, compute logits = W_out @ h, then pick the argmax: y = int(np.argmax(logits)).",
+    "Initialise h = v (the encoder context). For the first decoder input, use token index 0 as the BOS token. Collect each predicted y into a list and return it after n_steps iterations.",
+  ]}
+  solutionCode={`import numpy as np
+
+def greedy_decode(v, W_h, U_e, W_out, embeddings, n_steps):
+    """
+    v:          (d_h,)  encoder context vector
+    W_h:        (d_h, d_h)
+    U_e:        (d_h, d_emb)
+    W_out:      (vocab, d_h)
+    embeddings: (vocab, d_emb)
+    n_steps:    int
+    """
+    h = v.copy()
+    y = 0  # BOS index
+    outputs = []
+    for _ in range(n_steps):
+        e = embeddings[y]            # (d_emb,)
+        h = np.tanh(W_h @ h + U_e @ e)  # (d_h,)
+        logits = W_out @ h           # (vocab,)
+        y = int(np.argmax(logits))
+        outputs.append(y)
+    return outputs
+`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def greedy_decode(v, W_h, U_e, W_out, embeddings, n_steps):
+    """
+    v:          (d_h,)  encoder context
+    W_h:        (d_h, d_h)
+    U_e:        (d_h, d_emb)
+    W_out:      (vocab, d_h)
+    embeddings: (vocab, d_emb)
+    n_steps:    int — run exactly this many decoder steps
+    Returns: list of predicted token indices (length == n_steps)
+    """
+    # TODO: implement
+    # 1. h = v.copy()
+    # 2. y = 0  (BOS)
+    # 3. loop n_steps times:
+    #    a. e = embeddings[y]
+    #    b. h = tanh(W_h @ h + U_e @ e)
+    #    c. logits = W_out @ h
+    #    d. y = argmax(logits)
+    #    e. outputs.append(y)
+    pass
+
+# Quick sanity
+np.random.seed(0)
+d_h, d_emb, vocab = 8, 4, 10
+v = np.random.randn(d_h)
+W_h = np.random.randn(d_h, d_h) * 0.1
+U_e = np.random.randn(d_h, d_emb) * 0.1
+W_out = np.random.randn(vocab, d_h)
+emb = np.random.randn(vocab, d_emb)
+result = greedy_decode(v, W_h, U_e, W_out, emb, 4)
+print("output:", result)
+print("length:", len(result) if result else "None")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+def greedy_decode(v, W_h, U_e, W_out, embeddings, n_steps):
+    h = v.copy()
+    y = 0
+    outputs = []
+    for _ in range(n_steps):
+        e = embeddings[y]
+        h = np.tanh(W_h @ h + U_e @ e)
+        logits = W_out @ h
+        y = int(np.argmax(logits))
+        outputs.append(y)
+    return outputs
+`}
+  testCode={`import numpy as np
+np.random.seed(42)
+d_h, d_emb, vocab = 8, 4, 10
+v = np.random.randn(d_h)
+W_h = np.random.randn(d_h, d_h) * 0.1
+U_e = np.random.randn(d_h, d_emb) * 0.1
+W_out = np.random.randn(vocab, d_h)
+emb = np.random.randn(vocab, d_emb)
+
+# Test 1: output length equals n_steps
+out = greedy_decode(v, W_h, U_e, W_out, emb, 4)
+assert len(out) == 4, f"expected 4 outputs, got {len(out)}"
+
+# Test 2: all token indices are valid vocabulary indices
+assert all(0 <= tok < vocab for tok in out), f"token index out of range: {out}"
+
+# Test 3: final hidden state has correct shape (indirect: if length is right, h shape was right)
+out2 = greedy_decode(v, W_h, U_e, W_out, emb, 1)
+assert len(out2) == 1, "single-step decode should return list of length 1"
+
+# Test 4: deterministic — same inputs produce same outputs
+out3 = greedy_decode(v, W_h, U_e, W_out, emb, 4)
+assert out3 == out, "greedy decode must be deterministic"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the greedy decoder, what does np.argmax(logits) return?", options: [
+    { text: "The vocabulary index of the token with the highest unnormalised score (logit)", correct: true, explain: "Argmax returns the position of the maximum value. Since logits are proportional to log-probability before softmax, argmax(logits) == argmax(softmax(logits)) — the highest-probability token." },
+    { text: "A probability distribution over the vocabulary", correct: false, explain: "np.argmax returns a single integer index, not a distribution. To get probabilities you would apply np.exp(logits) / np.exp(logits).sum() (softmax)." },
+    { text: "The index of the token with the highest embedding magnitude", correct: false, explain: "Logits are W_out @ h, not embedding magnitudes. The argmax selects based on the decoder hidden state projected through W_out." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1409.3215.pdf" title="Sequence to Sequence Learning with Neural Networks" />
+
+Suggested reading order: §3 (The Model — encoder/decoder architecture and training objective) → §3.3 (Reversing the Source — the empirical trick and its intuition) → §5 (Experiments — BLEU results on WMT English→French showing reversal gains).
+
+</StageSection>
