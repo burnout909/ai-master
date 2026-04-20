@@ -1,0 +1,273 @@
+---
+slug: reflexion
+title: "Reflexion: Language Agents with Verbal Reinforcement Learning"
+authors: "Shinn, Cassano, Berman, Gopinath, Narasimhan, Yao"
+year: 2023
+era: agents
+arxivId: "2303.11366"
+estimatedMinutes: 45
+prerequisites: ["react"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { ReflexionTrace } from "../../components/widgets/ReflexionTrace.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Traditional reinforcement learning improves an agent by updating its neural network weights via gradients: the policy receives a reward signal, backpropagates through millions of parameters, and nudges its behavior for the next episode. This works beautifully when you own the model. But what if your agent is a black-box LLM accessed through an API — or any frozen model where gradient-based updates are impossible or prohibitively expensive? The weights are off limits. You cannot retrain a 100B-parameter model after every maze run.
+
+Reflexion's answer is **verbal reinforcement**: keep the weights frozen and instead let the agent update its *behavior* through language. After a failed trial, the agent — or a separate reflection module — writes a natural-language post-mortem ("the wall is at (2,2), I should navigate around it rather than through it") and stores it in an **episodic memory buffer**. The next trial begins with this memory prepended to the prompt, effectively conditioning the policy on its own accumulated hindsight. No gradients. No weight updates. The agent improves by reading its own notes.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: imagine an agent navigating a grid with a hidden wall. On trial 1 it fails. On trial 2 it reads its own reflection ('the wall is at (2,2)'). Do you expect trial 2 to succeed? Why might it still fail, even with a perfect reflection?">
+  The reflection gives the agent a crucial piece of information it lacked — the wall location — so trial 2 is more likely to avoid that specific obstacle. But verbal reinforcement is not guaranteed: the reflection must be correctly generated, the agent must attend to it and act on it, and the corrected path must not encounter *new* obstacles. Reflexion succeeds when the reflection accurately diagnoses the failure mode and the next trial's task is within the agent's in-context reasoning ability.
+</PredictThenReveal>
+
+**Interact with the widget:** step through 5 trials using "Next trial". Start with "action only" to see what the agent did. Switch to "action + reward" to see the outcome. Finally switch to "action + reward + reflection" to read the verbal memory that gets appended before the next trial. Notice how the reflections accumulate and how the success rate changes after trial 3.
+
+<ReflexionTrace client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: trial 5 in this demo is actually longer (path length 7 vs. 6) and the agent reflects on preferring shorter paths. What does this suggest about the limits of verbal reinforcement as the memory buffer grows?">
+  The agent can only attend to a finite context window. As reflections accumulate — some about walls, some about path length, some potentially contradicting each other — the agent must weigh multiple constraints simultaneously. Older reflections may be pushed out of context or diluted by newer ones. Reflexion's paper explicitly notes that a large memory buffer can hurt performance if older, still-relevant reflections are truncated. This is the verbal analogue of catastrophic forgetting: not in weights, but in context.
+</PredictThenReveal>
+
+<SrsCard id="reflexion-core-insight" paper="reflexion" prompt="What is verbal reinforcement in Reflexion, and why is it useful for black-box LLMs?" answer="Verbal reinforcement keeps model weights frozen and instead updates behavior in-context: after each failed trial, a reflection module writes a natural-language diagnosis of what went wrong and how to fix it. This reflection is stored in an episodic memory buffer and prepended to subsequent trial prompts. The policy improves not through gradient descent but through conditioning on its own accumulated hindsight. This is useful for black-box or frozen LLMs where weight updates are impossible or prohibitively expensive." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Reflexion updates the agent's neural network weights after each failed trial using the verbal reflection as a training signal. True or false?", options: [
+    { text: "False. Reflexion explicitly avoids weight updates. The model parameters remain frozen. Improvement comes entirely from conditioning the prompt on accumulated reflections stored in episodic memory — a purely in-context mechanism.", correct: true, explain: "This is the defining feature of Reflexion. The paper's title says 'Verbal Reinforcement Learning' specifically to contrast with gradient-based RL. The agent improves by reading its own hindsight notes, not by adjusting weights." },
+    { text: "True. Reflexion uses a lightweight LoRA adapter to efficiently update a small number of parameters after each reflection, keeping inference cost low.", correct: false, explain: "Reflexion does not use LoRA or any parameter update. The method is zero-shot at the weight level — the base model is used as-is and all adaptation happens through the input context." },
+    { text: "True. Reflexion fine-tunes a small reward model on the verbal reflections, which then guides the frozen base model via classifier-free guidance.", correct: false, explain: "No reward model is fine-tuned in Reflexion. The evaluator computes a reward signal (binary or scalar), but this is used only to trigger reflection generation — it does not update any model." },
+  ]},
+  { prompt: "In Reflexion, what is stored in the episodic memory buffer M?", options: [
+    { text: "Natural-language reflections generated after each trial — textual post-mortems that diagnose failure modes and suggest behavioral corrections for future trials.", correct: true, explain: "Memory M is a list of strings. Each string is a reflection produced by the self-reflection module given the trajectory and reward. At the start of each new trial, the full memory (or a summarized version if it exceeds the context window) is prepended to the prompt." },
+    { text: "The raw action sequences from past trials, stored as token IDs for fast retrieval by a learned attention mechanism.", correct: false, explain: "The memory stores natural-language text, not raw token IDs or action sequences. The reflections are human-readable diagnoses, not replays of the trajectory." },
+    { text: "Scalar reward values from each trial, used to compute a running mean for advantage estimation in a REINFORCE-style update.", correct: false, explain: "Scalar rewards are used transiently to trigger reflection generation, but they are not stored in M. The memory stores only verbal reflections — text, not numbers." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Reflexion formalizes three interacting modules. The **Actor** is the policy `pi` — an LLM that produces actions `a_t` from the current state `s_t` and the memory buffer `M`. The **Evaluator** computes a reward `r_t` from the completed trajectory — this can be binary (success/failure) or a scalar. The **Self-Reflection** module generates a natural-language feedback string from the trajectory and reward.
+
+At trial `t`, the loop is:
+
+<Math display expr="\tau_t = \bigl(s_0,\,a_1,\,s_1,\,\ldots,\,a_T,\,s_T\bigr) \sim \pi(\cdot \mid s_0,\, M_{t-1})" />
+
+The actor unrolls a trajectory `tau_t` by sampling actions from the policy conditioned on the initial state and the current memory. Then:
+
+<Math display expr="r_t = \text{Evaluator}(\tau_t)" />
+
+<Math display expr="\ell_t = \text{Reflector}(\tau_t,\; r_t)" />
+
+<Math display expr="M_t = M_{t-1} \cup \{\ell_t\}" />
+
+The memory grows by one reflection per trial. The policy at trial `t+1` conditions on `M_t`. There is no explicit gradient anywhere in this loop — the only "learning" is the expansion of `M`.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why is a verbal reflection richer than a scalar reward as a learning signal?",
+    options: [
+      { text: "A scalar reward r_t tells the agent only how good or bad the overall outcome was — it contains no information about which specific action caused the failure or how to correct it. A verbal reflection can pinpoint the failure step, name the obstacle, and prescribe a concrete fix. This is information-theoretically richer: the reflection compresses the entire trajectory into actionable natural language.", correct: true, explain: "Consider a maze task where the agent fails with reward -1. The reward alone is uninformative about whether the failure was at step 3 or step 17, or what the agent should do differently. A reflection like 'I turned left at intersection B but the exit is to the right' gives the agent exactly the causal chain it needs. This is why verbal RL can outperform scalar RL on tasks where precise diagnosis matters." },
+      { text: "A scalar reward is noisier due to floating-point precision, while a verbal reflection is deterministic and therefore a more reliable training signal.", correct: false, explain: "Precision is not the issue. A scalar reward of 0 or 1 is perfectly deterministic for a binary task. The advantage of verbal feedback is its information content — it encodes which step failed and why — not its numerical precision." },
+      { text: "Verbal reflections are richer because they are longer in tokens, giving the model more compute to process during the next forward pass.", correct: false, explain: "Token length does not automatically confer richness. A verbose but uninformative reflection ('the agent tried many actions and eventually failed') would be long but useless. Richness comes from the semantic content — the causal diagnosis of failure — not from token count." },
+    ],
+  }}
+  revealExpr="r_t \in \mathbb{R} \;\text{(scalar)}\quad\text{vs.}\quad \ell_t \in \text{NL}(\text{step}, \text{cause}, \text{fix})"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "What architectural constraint limits the size of memory M, and what happens when that limit is reached?",
+    options: [
+      { text: "The LLM context window: a transformer can only attend to a fixed number of tokens. When M grows large enough that the concatenation of all reflections plus the current prompt exceeds the window, older reflections must be dropped or summarized. The agent effectively forgets early experiences.", correct: true, explain: "This is the fundamental bottleneck of all in-context learning methods. Reflexion's paper handles this by summarizing M when it exceeds a budget — e.g., using the LLM itself to compress several older reflections into a shorter summary. This is imperfect: summarization can lose specific details that were still relevant." },
+      { text: "The memory is constrained by GPU VRAM: each reflection string is stored as a floating-point embedding vector, and the embedding matrix grows until VRAM is exhausted.", correct: false, explain: "Reflexion stores reflections as plain text strings in a list, not as embedding vectors in VRAM. The constraint is the LLM's context window (token budget), not GPU memory." },
+      { text: "Memory size is bounded by a hyperparameter K chosen before training; if more than K reflections are generated, the oldest is deleted without summarization.", correct: false, explain: "While a simple FIFO buffer is one possible implementation, the paper discusses summarization as the preferred strategy for handling overflow — not silent deletion. The key constraint remains the context window, and how to manage it is a design choice." },
+    ],
+  }}
+  revealExpr="|M_t \text{ (tokens)}| \leq \text{context window} \Rightarrow \text{summarize or drop old } \ell_i"
+/>
+
+<SrsCard id="reflexion-three-modules" paper="reflexion" prompt="Name Reflexion's three modules and describe what each one does." answer="Actor: the LLM policy pi that samples actions given the current state and memory buffer M. Evaluator: computes the reward r_t from the completed trajectory — can be binary (pass/fail) or a scalar score. Self-Reflection: generates a natural-language reflection string l_t from the trajectory and reward, diagnosing what went wrong and how to improve." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the Reflexion update equation M_t = M_{t-1} union {l_t}, what triggers the generation of l_t?", options: [
+    { text: "The evaluator's reward r_t: after the trajectory tau_t is complete and evaluated, the self-reflection module generates l_t from both the trajectory and the reward. If the evaluator indicates success, the reflection may still be generated but often records what worked.", correct: true, explain: "The reflection is generated after every trial, not only failures. On success trials the reflection may note 'going right first avoids the wall' — reinforcing correct behavior. On failure trials it diagnoses the error. The key trigger is the availability of both tau_t (what happened) and r_t (how it was judged)." },
+    { text: "A separate meta-learning loop that periodically pauses the agent and requests a reflection after every K trials regardless of reward.", correct: false, explain: "Reflexion generates a reflection after every individual trial, not after batches of K trials. The timing is per-trial, not periodic." },
+    { text: "The user's explicit request: the human operator reads the trajectory and decides whether it warrants a reflection before the next trial begins.", correct: false, explain: "Reflexion is fully automated. The self-reflection module is an LLM prompted with the trajectory and reward; no human intervention is required between trials." },
+  ]},
+  { prompt: "The Reflexion Actor samples actions from pi(· | s, M). What changes between trial t and trial t+1?", options: [
+    { text: "M grows by one reflection l_t. The model weights pi remain identical. The policy's behavior changes purely because the prompt now contains one more natural-language observation about past failure.", correct: true, explain: "This is the in-context learning mechanism at work. The same frozen LLM produces different actions when its context contains the reflection 'the wall is at (2,2), go around it' compared to an empty memory. No fine-tuning, no gradient steps — only a longer, more informative prompt." },
+    { text: "Both M and the model weights change: M is updated with the new reflection, and pi is updated via a single gradient step on the log-probability of the successful action sequence.", correct: false, explain: "Weights are never updated in Reflexion. Only M changes between trials. This is the defining constraint — and the practical advantage — of the method." },
+    { text: "Only the environment state s changes. The memory M and the policy pi remain constant across trials because each trial is treated as an independent episode.", correct: false, explain: "M explicitly grows across trials — that is the entire point of Reflexion. Each trial is not independent; it conditions on the accumulated memory of all prior trials." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of the Reflexion agent loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Initialize memory M as empty list; reset environment to initial state s_0",
+  "Run trajectory tau_t by sampling actions from Actor(pi, s_0, M)",
+  "Evaluate trajectory: r_t = Evaluator(tau_t)",
+  "Generate verbal reflection: l_t = Reflector(tau_t, r_t); append l_t to M",
+  "Repeat until max trials reached or task succeeds",
+]} />
+
+Fill in the blank — the call that generates and stores a verbal reflection:
+
+```text
+def reflexion_step(trajectory, reward, memory):
+    reflection = _______
+    memory.append(reflection)
+    return memory
+```
+
+<FillBlank answer="Reflector(trajectory, reward)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pseudo code loop, the memory M is passed to the Actor at the start of each trial. Why must M be passed at the beginning of the trial, not at the end?", options: [
+    { text: "The Actor uses M to condition its action sampling for the current trial. If M were passed only at the end, the agent would have generated the entire trajectory without access to past reflections — defeating the purpose of episodic memory.", correct: true, explain: "The whole point of episodic memory is to change behavior before the trial begins. The reflection from trial t is appended to M at the end of trial t, so it is available at the start of trial t+1. This one-trial lag is intentional: you can only reflect after you know the outcome." },
+    { text: "M must be passed at the beginning for computational efficiency: reading the memory once per trial avoids repeated context-window lookups during action sampling.", correct: false, explain: "Efficiency is not the primary reason. The reason is causal: the memory must be present in the context when actions are sampled so that the policy can condition on it. There is no technical mechanism to 'inject' memory mid-trajectory in a standard autoregressive LLM." },
+    { text: "The environment resets at the start of each trial and clears the agent's internal state, so M must be re-injected at that point to restore knowledge of past trials.", correct: false, explain: "The environment reset affects the task state (e.g., maze position), not the LLM's prompt. Memory is maintained externally by the Reflexion harness, not inside the environment or the model." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a minimal **Reflexion memory loop** in Python. Given a `task` string, a stub function `run_trial(task, memory)` that returns `(reward, trajectory)`, and a stub function `reflect(trajectory, reward)` that returns a string, write `reflexion_loop` to run `n_trials` trials, accumulating reflections in a list and returning the final memory.
+
+<HintFade client:load
+  hints={[
+    "Initialize an empty list `memory = []`. This will hold all verbal reflections accumulated across trials.",
+    "In each iteration of a for-loop over range(n_trials): call run_trial(task, memory) to get (reward, trajectory), then call reflect(trajectory, reward) to get the reflection string.",
+    "Full solution: append the reflection string to memory after each trial, then return memory. The loop body is three lines: unpack run_trial, call reflect, append to memory.",
+  ]}
+  solutionCode={`def reflexion_loop(task, run_trial, reflect, n_trials):
+    """
+    task:      string describing the task
+    run_trial: callable(task, memory) -> (reward, trajectory)
+    reflect:   callable(trajectory, reward) -> str
+    n_trials:  int, number of trials to run
+    Returns:   list of reflection strings (length == n_trials)
+    """
+    memory = []
+    for _ in range(n_trials):
+        reward, trajectory = run_trial(task, memory)
+        reflection = reflect(trajectory, reward)
+        memory.append(reflection)
+    return memory`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`def reflexion_loop(task, run_trial, reflect, n_trials):
+    """
+    task:      string describing the task
+    run_trial: callable(task, memory) -> (reward, trajectory)
+    reflect:   callable(trajectory, reward) -> str
+    n_trials:  int, number of trials to run
+    Returns:   list of reflection strings (length == n_trials)
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity check
+def mock_run_trial(task, memory):
+    reward = 1 if len(memory) >= 2 else 0
+    trajectory = f"trial with {len(memory)} prior reflections"
+    return reward, trajectory
+
+def mock_reflect(trajectory, reward):
+    return f"reflection on: {trajectory} -> reward {reward}"
+
+result = reflexion_loop("navigate maze", mock_run_trial, mock_reflect, 3)
+if result is not None:
+    for i, r in enumerate(result):
+        print(f"memory[{i}]: {r}")
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`def reflexion_loop(task, run_trial, reflect, n_trials):
+    memory = []
+    for _ in range(n_trials):
+        reward, trajectory = run_trial(task, memory)
+        reflection = reflect(trajectory, reward)
+        memory.append(reflection)
+    return memory
+`}
+  testCode={`def reflexion_loop(task, run_trial, reflect, n_trials):
+    memory = []
+    for _ in range(n_trials):
+        reward, trajectory = run_trial(task, memory)
+        reflection = reflect(trajectory, reward)
+        memory.append(reflection)
+    return memory
+
+# Test 1: memory length equals n_trials
+calls = []
+def counting_run(task, mem):
+    calls.append(len(mem))
+    return 0, "traj"
+def counting_reflect(traj, reward):
+    return f"reflection_{len(calls)}"
+
+mem = reflexion_loop("task", counting_run, counting_reflect, 4)
+assert len(mem) == 4, f"Expected 4 reflections, got {len(mem)}"
+
+# Test 2: each entry is a string
+for i, entry in enumerate(mem):
+    assert isinstance(entry, str), f"mem[{i}] is {type(entry)}, expected str"
+
+# Test 3: memory grows: later trials receive longer memory
+assert calls == [0, 1, 2, 3], f"Memory sizes passed to run_trial: {calls}"
+
+# Test 4: n_trials=0 returns empty list
+empty = reflexion_loop("task", counting_run, counting_reflect, 0)
+assert empty == [], f"Expected [], got {empty}"
+
+# Test 5: n_trials=1 returns list of length 1
+single = reflexion_loop("task", lambda t, m: (1, "x"), lambda t, r: "one reflection", 1)
+assert len(single) == 1
+assert single[0] == "one reflection"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the reflexion_loop implementation, memory is passed to run_trial on every iteration. What does this test?", options: [
+    { text: "It tests that the actor receives the full accumulated history of reflections before starting each new trial — the core in-context conditioning mechanism. If memory were not passed, run_trial would always behave identically regardless of past experience.", correct: true, explain: "This is exactly what the test checks via `calls == [0, 1, 2, 3]`: on trial 1 the memory has 0 entries, on trial 2 it has 1, and so on. The growing memory is what changes the actor's behavior across trials in a real Reflexion system." },
+    { text: "It tests that run_trial does not mutate the memory list in place — a defensive programming check to ensure the list is passed by value.", correct: false, explain: "Python lists are passed by reference, not by value. The test is not about mutation safety; it is about verifying that the correct memory state (with all prior reflections) is visible to the actor at the start of each trial." },
+    { text: "It tests that the reflect function is called before run_trial to ensure the reflection from trial t is available during trial t (same-trial conditioning).", correct: false, explain: "The correct order is run_trial first, then reflect. You can only reflect after observing the outcome of the trial. Same-trial conditioning would require time travel — the reflection is available only for the next trial." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2303.11366.pdf" title="Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al. 2023)" />
+
+Suggested reading order: §1 (Introduction — motivation for verbal RL and contrast with gradient-based RL) → §3 (Reflexion — formal description of the three modules and the memory loop) → §4 (Experiments — AlfWorld, HotpotQA, and HumanEval benchmarks).
+
+</StageSection>
