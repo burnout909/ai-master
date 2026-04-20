@@ -22,7 +22,7 @@ export const PAPERS_META: PaperMeta[] = [
   { slug: "seq2seq",     title: "Sequence to Sequence Learning with Neural Networks", authors: "Sutskever, Vinyals, Le", year: 2014, era: "foundations", arxivId: "1409.3215", summary: "Encoder–decoder RNN for translation.", status: "implemented" },
   { slug: "gan",         title: "Generative Adversarial Nets", authors: "Goodfellow et al.", year: 2014, era: "foundations", arxivId: "1406.2661", summary: "Generator vs discriminator minimax game.", status: "stub" },
   { slug: "batchnorm",   title: "Batch Normalization", authors: "Ioffe, Szegedy", year: 2015, era: "foundations", arxivId: "1502.03167", summary: "Reduces internal covariate shift, stabilizes training.", status: "implemented" },
-  { slug: "resnet",      title: "Deep Residual Learning for Image Recognition", authors: "He et al.", year: 2015, era: "foundations", arxivId: "1512.03385", summary: "Skip connections enable very deep networks.", status: "stub" },
+  { slug: "resnet",      title: "Deep Residual Learning for Image Recognition", authors: "He et al.", year: 2015, era: "foundations", arxivId: "1512.03385", summary: "Skip connections enable very deep networks.", status: "implemented" },
   { slug: "bahdanau",    title: "Neural Machine Translation by Jointly Learning to Align and Translate", authors: "Bahdanau, Cho, Bengio", year: 2014, era: "foundations", arxivId: "1409.0473", summary: "Attention mechanism for seq2seq alignment.", status: "implemented" },
 
   // ——— Transformer Era ———

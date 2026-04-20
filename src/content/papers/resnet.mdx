@@ -1,0 +1,250 @@
+---
+slug: resnet
+title: "Deep Residual Learning for Image Recognition"
+authors: "He, Zhang, Ren, Sun"
+year: 2015
+era: foundations
+arxivId: "1512.03385"
+estimatedMinutes: 45
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { ResidualDepth } from "../../components/widgets/ResidualDepth.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before ResNet, the community assumed that adding more layers to a neural network always helps — more parameters means more capacity. But in 2015 He et al. showed something disturbing: when you stack plain layers past ~20 deep on CIFAR-10 or ImageNet, **training accuracy gets worse**, not just test accuracy. This is not overfitting — the training error itself rises. The network simply refuses to learn the identity mapping through many layers.
+
+The fix is surprisingly simple: give the network a **shortcut**. Instead of asking each block to directly learn the desired mapping H(x), let it learn the residual F(x) = H(x) − x, then add back the input: H(x) = F(x) + x. If the optimal mapping is close to identity, the residual is near zero — much easier to push towards zero than to fit an identity through stacked weight layers.
+
+<PredictThenReveal client:load predictPrompt="Before touching the widget: as you increase depth from 20 to 50 layers in a plain network (no skip connection), what do you expect happens to training accuracy?">
+  Training accuracy degrades with plain networks beyond ~20 layers — the degradation problem. Gradients become harder to propagate through many weight layers, and the network cannot learn even the identity mapping. This is not overfitting; the training error itself worsens.
+</PredictThenReveal>
+
+Drag the depth slider and toggle "Use skip connection" to see the gap between plain and residual networks.
+
+<ResidualDepth client:load />
+
+<PredictThenReveal client:load predictPrompt="With skip connections enabled at depth 50, the residual curve stays high while the plain curve drops. Why does the shortcut path make identity easier to learn?">
+  With a skip connection, the weight layers only need to learn the residual F(x) = H(x) − x. If the true optimal mapping is near identity, F(x) ≈ 0 — easy. In the plain case, each layer must conspire to produce an exact identity through composition of nonlinear transforms, which is hard. Skip connections also provide a direct gradient highway back to early layers, alleviating vanishing gradients.
+</PredictThenReveal>
+
+<SrsCard id="resnet-degradation" paper="resnet" prompt="What is the degradation problem in deep plain networks?" answer="Training accuracy gets worse as depth increases beyond ~20 layers — even on training data, not just test. The network cannot learn identity mappings through many stacked nonlinear layers, so extra depth hurts rather than helps." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The degradation problem is caused by:", options: [
+    { text: "Vanishing/exploding gradients making identity hard to learn through many weight layers", correct: true, explain: "Stacked nonlinear layers can't easily represent identity, so deeper plain nets train worse." },
+    { text: "Overfitting due to more parameters", correct: false, explain: "Degradation appears on training error too, not just test — overfitting would only hurt test." },
+    { text: "Insufficient data for large models", correct: false, explain: "Adding layers to the same dataset under the same data budget causes degradation — it's an optimization issue." },
+  ]},
+  { prompt: "A residual block learns F(x). What does it output?", options: [
+    { text: "F(x) + x", correct: true, explain: "The input x is added back via a skip connection: H(x) = F(x) + x." },
+    { text: "F(x)", correct: false, explain: "Without the skip, it's a plain block. The residual formulation adds x." },
+    { text: "F(x) · x", correct: false, explain: "The shortcut is additive, not multiplicative." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+A residual block with input **x** and learned residual function **F**:
+
+<Math display expr="y = F(x,\{W_i\}) + x" />
+
+When the input and output dimensions differ (e.g., when doubling channels or halving spatial size), a linear projection is applied to the shortcut:
+
+<Math display expr="y = F(x,\{W_i\}) + W_s\, x" />
+
+W_s is a 1×1 convolution that matches dimensions. F typically contains two or three conv-BN-ReLU sub-layers; the final ReLU is applied **after** the addition.
+
+The gradient through a residual block is:
+
+<Math display expr="\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial y}\left(1 + \frac{\partial F}{\partial x}\right)" />
+
+The "+1" term from the skip connection means the gradient can never vanish completely — even if ∂F/∂x ≈ 0, the loss gradient flows unchanged back to x.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why is learning F(x) = H(x) − x easier than learning H(x) directly, when the optimal H is close to identity?",
+    options: [
+      { text: "The residual F is near zero, and zero is the natural output of weight layers initialised near zero", correct: true, explain: "With weights ≈ 0, F(x) ≈ 0 is automatic. Pushing H toward identity through stacked nonlinearities is much harder." },
+      { text: "The residual formulation reduces the number of parameters", correct: false, explain: "F has the same parameters as a plain block; the shortcut adds no new weights (or only a 1×1 conv)." },
+      { text: "Skip connections apply batch normalisation to x before adding", correct: false, explain: "The skip path is either identity or a linear projection — no extra normalisation." },
+    ],
+  }}
+  revealExpr="F(x) \approx 0 \Rightarrow y \approx x \quad (\text{identity is free})"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Given the gradient formula ∂L/∂x = (∂L/∂y)(1 + ∂F/∂x), what prevents gradient vanishing even with 100+ layers?",
+    options: [
+      { text: "The constant 1 in the expression ensures some gradient always flows through the shortcut path", correct: true, explain: "Regardless of how small ∂F/∂x becomes, the +1 passes ∂L/∂y unattenuated back to x." },
+      { text: "Batch normalisation within F re-scales gradients to unit variance", correct: false, explain: "BN helps stability, but the skip connection's +1 is the key anti-vanishing mechanism." },
+      { text: "ReLU activations clip negative gradients, preserving magnitude", correct: false, explain: "ReLU can kill gradients (dying ReLU). The shortcut is the anti-vanishing mechanism, not ReLU." },
+    ],
+  }}
+  revealExpr="\frac{\partial \mathcal{L}}{\partial x} = \frac{\partial \mathcal{L}}{\partial y}\!\left(1 + \frac{\partial F}{\partial x}\right)"
+/>
+
+<SrsCard id="resnet-gradient" paper="resnet" prompt="How does the skip connection prevent vanishing gradients?" answer="The gradient through a residual block is (∂L/∂y)(1 + ∂F/∂x). The constant 1 from the identity shortcut ensures the gradient ∂L/∂y always flows back to x unchanged, regardless of how small the residual branch gradient is." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "When are projection shortcuts (W_s x) used instead of identity shortcuts?", options: [
+    { text: "When the residual block changes spatial resolution or number of channels", correct: true, explain: "A 1×1 conv matches dimensions so the shortcut can be added to F(x)." },
+    { text: "In every residual block to improve gradient flow", correct: false, explain: "Identity shortcuts are used when dimensions match — they add no parameters." },
+    { text: "Only at the final layer before the classifier", correct: false, explain: "Projections appear at every stage transition where dimensions change." },
+  ]},
+  { prompt: "Where is the final ReLU applied in a residual block?", options: [
+    { text: "After the addition y = F(x) + x", correct: true, explain: "The addition happens first, then ReLU is applied to the sum." },
+    { text: "Before the addition, inside the last conv of F", correct: false, explain: "The last conv in F is typically followed by BN but no ReLU — ReLU comes after the add." },
+    { text: "There is no ReLU in a residual block", correct: false, explain: "ReLU follows the skip-connection addition." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the residual block forward pass steps in correct order:
+
+<LineReorder client:load lines={[
+  "identity = x  (save input for shortcut)",
+  "out = conv1(x)  →  BN  →  ReLU",
+  "out = conv2(out)  →  BN",
+  "out = out + identity  (add residual)",
+  "out = ReLU(out)",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def residual_block(x, W1, W2):
+    identity = x
+    out = relu(bn(conv(x, W1)))
+    out = bn(conv(out, W2))
+    out = _______    # ← fill
+    return relu(out)
+```
+
+<FillBlank answer="out + identity" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pseudo code above, why is the final relu applied AFTER the addition?", options: [
+    { text: "To allow the gradient from both the skip and residual paths to flow back cleanly before the nonlinearity", correct: true, explain: "Applying relu after the add lets gradients from F and x recombine first; applying it inside F would cut the shortcut gradient." },
+    { text: "To reduce the number of relu operations and save computation", correct: false, explain: "Efficiency is a side effect; the design choice is about gradient flow." },
+    { text: "Because relu must always be the last operation in a block", correct: false, explain: "There is no such rule. The placement follows the residual design." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a residual block forward pass in NumPy. Use simple matrix multiplication (no actual convolution) to keep it clear — treat each "conv" as a linear layer applied to a flattened input.
+
+<HintFade client:load
+  hints={[
+    "Save the input before any transformation: identity = x.copy(). Then apply two linear-ReLU layers to get F(x).",
+    "The second linear layer should NOT have a ReLU applied to it inside F — ReLU only comes after the addition.",
+    "After computing out = W2 @ relu(W1 @ x), add the saved identity: out = out + identity, then apply relu.",
+  ]}
+  solutionCode={`import numpy as np
+
+def relu(x):
+    return np.maximum(0, x)
+
+def residual_block(x, W1, W2):
+    identity = x.copy()
+    out = relu(W1 @ x)      # conv1 + ReLU
+    out = W2 @ out           # conv2 (no ReLU yet)
+    out = out + identity     # add shortcut
+    return relu(out)         # final ReLU`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def relu(x):
+    return np.maximum(0, x)
+
+def residual_block(x, W1, W2):
+    # TODO: implement
+    pass
+
+np.random.seed(42)
+d = 8
+x = np.random.randn(d)
+W1 = np.random.randn(d, d) * 0.1
+W2 = np.random.randn(d, d) * 0.1
+out = residual_block(x, W1, W2)
+print("output shape:", None if out is None else out.shape)
+print("all non-negative (ReLU applied):", None if out is None else bool(np.all(out >= 0)))
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`
+import numpy as np
+
+def relu(x):
+    return np.maximum(0, x)
+
+def residual_block(x, W1, W2):
+    identity = x.copy()
+    out = relu(W1 @ x)
+    out = W2 @ out
+    out = out + identity
+    return relu(out)
+`}
+  testCode={`
+import numpy as np
+
+np.random.seed(42)
+d = 8
+x = np.random.randn(d)
+W1 = np.random.randn(d, d) * 0.1
+W2 = np.random.randn(d, d) * 0.1
+out = residual_block(x, W1, W2)
+
+assert out.shape == (d,), f"expected shape ({d},), got {out.shape}"
+assert np.all(out >= 0), "output should be non-negative (ReLU at end)"
+
+# With W1=W2=0, F(x)=0, so output should be relu(x)
+W_zero = np.zeros((d, d))
+out_id = residual_block(x, W_zero, W_zero)
+assert np.allclose(out_id, relu(x)), "zero-weight block should act like relu(x)"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the zero-weight test above (W1=W2=0), the block outputs relu(x). What does this tell you about skip connections?", options: [
+    { text: "When the residual branch contributes nothing, the block preserves the input (modulo ReLU) — identity is the default", correct: true, explain: "This is exactly why skip connections make identity easy to learn: zero weights already give you identity." },
+    { text: "The network has collapsed and will not train", correct: false, explain: "Zero initialisation of the residual path is actually a valid training strategy (used in some variants)." },
+    { text: "The output is always zero because W1 and W2 are zero", correct: false, explain: "The skip connection adds x back, so the output is relu(x), not zero." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1512.03385.pdf" title="Deep Residual Learning for Image Recognition" />
+
+Suggested reading order: §3.1 (Residual Learning) → §3.2 (Identity Mapping by Shortcuts) → §4 (Experiments — Table 6 plain vs residual, Table 4 ImageNet results).
+
+</StageSection>
