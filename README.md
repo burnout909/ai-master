@@ -1,43 +1,34 @@
-# Astro Starter Kit: Minimal
+# ai_master
 
-```sh
-npm create astro@latest -- --template minimal
+Personal interactive web app for learning deep learning → agents (2012 → 2026) through canonical papers, one at a time, with active-learning pedagogy.
+
+## Stack
+
+Astro 6 · React 19 · TypeScript · Tailwind v4 · MDX · KaTeX · Monaco · Pyodide · localStorage.
+
+## Quick start
+
+```bash
+npm install
+npm run dev            # http://localhost:4321
+npm run build          # static output in dist/
+npm run preview        # serve dist/
+npm run test           # unit tests (Vitest)
+npm run e2e            # Playwright smoke
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+## How it teaches
 
-## 🚀 Project Structure
+Every paper ships as five stages in strict order — **Intuition → Math → Pseudo → Code → Original PDF** — and every stage uses the **Predict → Attempt → Reveal → Reflect (PARR)** loop: you produce something before any answer is shown. Retrieval checks (MC) gate stage mastery; the best items go into a spaced-repetition queue you review on `/review`.
 
-Inside of your Astro project, you'll see the following folders and files:
+## MVP papers
 
-```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
-```
+- Attention Is All You Need (Vaswani 2017)
+- DDPM (Ho 2020)
+- ReAct (Yao 2022)
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+The `/` roadmap shows ~30 canonical papers across six eras; three are implemented, the rest are stubs to extend post-MVP.
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+## Persistence
 
-Any static assets, like images, can be placed in the `public/` directory.
-
-## 🧞 Commands
-
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+All state lives in the browser (`localStorage` key `ai_master:v1`). Use `/progress` → Export JSON to back up. Nothing leaves the machine.
