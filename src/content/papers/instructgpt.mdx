@@ -1,0 +1,266 @@
+---
+slug: instructgpt
+title: "Training Language Models to Follow Instructions with Human Feedback"
+authors: "Ouyang et al."
+year: 2022
+era: alignment
+arxivId: "2203.02155"
+estimatedMinutes: 55
+prerequisites: ["gpt3", "ppo"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { RewardMargin } from "../../components/widgets/RewardMargin.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+GPT-3 was a remarkable achievement — 175 billion parameters trained on vast swaths of the internet. Yet when you prompted it, it would just as readily produce a toxic rant, a confident hallucination, or a completely off-topic response as a useful answer. The model had learned to predict text, not to be helpful. There was a fundamental mismatch between the training objective (next-token prediction on web data) and the actual goal (follow the user's instruction helpfully and harmlessly).
+
+InstructGPT (Ouyang et al., 2022) introduced the RLHF (Reinforcement Learning from Human Feedback) pipeline to bridge this gap. The three-phase recipe is: **(1) Supervised Fine-Tuning (SFT)** — fine-tune GPT-3 on a small dataset of human-written demonstrations of good responses; **(2) Reward Model (RM)** — train a separate model to score responses by learning from human pairwise preference judgments (which of two responses is better?); **(3) PPO fine-tuning** — use PPO to optimize the SFT model to maximize the RM's score, with a KL-divergence penalty keeping it close to the SFT policy to prevent "reward hacking."
+
+The reward model's core mechanism is the **Bradley-Terry preference model**: given two responses A and B with scalar rewards `r(A)` and `r(B)`, the probability that a human prefers A over B is `sigmoid(r(A) - r(B))`. The larger the margin between the two rewards, the more confident the preference. This is exactly what the widget shows.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if response A has reward 2.0 and response B has reward 0.0, what is P(A > B) according to the Bradley-Terry model? What happens to the RM log-loss for a label of 'A preferred'?">
+  With margin = 2.0 - 0.0 = 2.0 and temperature T = 1.0: `sigmoid(2.0) ≈ 0.88`. P(A > B) ≈ 88%. The RM log-loss = `-log(0.88) ≈ 0.13` — small because the model is confident and correct. When rewards are tied (margin = 0), `sigmoid(0) = 0.5` and loss = `log(2) ≈ 0.693` — the model is maximally uncertain.
+</PredictThenReveal>
+
+**Interact with the widget:** set reward A = 2.0, reward B = 0.0 and observe P(A > B) and the log-loss. Then gradually move reward B up toward reward A — watch the preference bar converge toward 50% and the loss climb toward log(2). Try raising the temperature T — this "softens" preferences, making even large margins less decisive.
+
+<RewardMargin client:load />
+
+<PredictThenReveal client:load predictPrompt="After exploring the widget: why would a large temperature T be problematic when training a reward model on human labels? What does it imply about the learned reward signal?">
+  A large T means even very large reward margins produce preference probabilities only slightly above 50%. The model is trained to be uncertain even when the signal is clear. During PPO, the policy optimizes against this reward signal — if the RM can't distinguish good from bad responses confidently, the PPO update is noisy and the fine-tuned model won't learn sharp preferences. In practice, T is fixed at 1.0 and the RM is trained to produce reward values whose magnitude encodes confidence, not to adjust T.
+</PredictThenReveal>
+
+<SrsCard id="instructgpt-rlhf-pipeline" paper="instructgpt" prompt="What are the three phases of the InstructGPT RLHF pipeline, and what data is required for each?" answer="(1) SFT: fine-tune on human-written demonstration responses to prompts. (2) RM training: train a reward model on pairwise human preference comparisons (which of two responses is better). (3) PPO: optimize the SFT policy with PPO to maximize the RM reward, with a KL penalty to the SFT policy to prevent reward hacking." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why can't you just use raw human preference rankings directly as a training signal for the policy, without training a reward model?", options: [
+    { text: "Human rankings are discrete and non-differentiable — you cannot backpropagate through them. The reward model converts rankings into a smooth, differentiable scalar signal that can be used by PPO on any generated response, even ones humans haven't seen.", correct: true, explain: "PPO requires a scalar reward for every generated token sequence. You cannot query humans in the inner loop of gradient descent (too slow, too expensive). The RM is a learned proxy that generalizes from the finite set of human comparisons to score arbitrary responses differentiably." },
+    { text: "Human rankings are too noisy to be useful; the reward model smooths out the noise by averaging over many annotations before passing the signal to PPO.", correct: false, explain: "Noise averaging is a benefit but not the core reason. The fundamental problem is differentiability: you need a function you can evaluate on any generated output and backpropagate through. A reward model provides this; raw rankings cannot." },
+    { text: "Human rankings require the full response to be generated before scoring; the reward model allows token-level credit assignment during PPO rollouts.", correct: false, explain: "PPO for LLMs typically uses a response-level (not token-level) reward signal anyway — the RM scores the complete response. The key reason for the RM is differentiability and generalization to unseen outputs, not token-level scoring." },
+  ]},
+  { prompt: "What problem does the KL penalty to the SFT policy solve in the PPO phase?", options: [
+    { text: "Without the KL penalty, the policy would 'reward hack' the RM — finding degenerate outputs (e.g. repetitive text) that score highly on the learned reward model but are not actually helpful or coherent. The KL penalty keeps the policy close to the SFT distribution which is linguistically natural.", correct: true, explain: "Reward models are imperfect proxies trained on finite data. A policy optimized purely against an RM will exploit its blind spots. The KL penalty acts as a regularizer: `r_total = r_RM(x,y) - beta * KL(pi || pi_SFT)`. High KL is penalized, bounding how far the policy can deviate from the well-behaved SFT distribution." },
+    { text: "The KL penalty prevents the PPO clipping ratio from exceeding the epsilon boundary, making the trust region larger for InstructGPT than for standard RL tasks.", correct: false, explain: "These are two separate mechanisms. PPO's clip controls the probability ratio r_t = pi_new/pi_old per minibatch update. The KL penalty to pi_SFT is an additional term in the reward function that operates at the trajectory level, not the minibatch level." },
+    { text: "The KL penalty ensures that InstructGPT retains the factual knowledge of the original GPT-3 model by penalizing updates that change the model's token probabilities on pretraining data.", correct: false, explain: "The KL is computed against the SFT model (not the original GPT-3 pretraining distribution) and is measured on the RL prompt distribution (not pretraining data). It addresses reward hacking, not factual retention specifically." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The reward model is trained via maximum likelihood on the **Bradley-Terry preference model**. Given a prompt x, a preferred response `y_w` (winner) and a rejected response `y_l` (loser), the probability that a human picks `y_w` is:
+
+<Math display expr="P(y_w \succ y_l \mid x) = \sigma\!\left(r_\phi(x, y_w) - r_\phi(x, y_l)\right)" />
+
+where `sigma` is the sigmoid function and `r_phi` is the reward model with parameters `phi`. Training minimizes the negative log-likelihood over all collected preference pairs:
+
+<Math display expr="\mathcal{L}_{\text{RM}}(\phi) = -\mathbb{E}_{(x,\,y_w,\,y_l)\sim\mathcal{D}}\!\left[\log \sigma\!\bigl(r_\phi(x, y_w) - r_\phi(x, y_l)\bigr)\right]" />
+
+This is a pairwise log-loss: the model is rewarded for assigning a larger scalar reward to the preferred response and penalized when it cannot distinguish the pair.
+
+The PPO objective adds a KL-divergence penalty against the SFT policy `pi_SFT` to prevent reward hacking:
+
+<Math display expr="\mathcal{L}_{\text{PPO}}(\theta) = \mathbb{E}_{(x,y)\sim\pi_\theta}\!\left[r_\phi(x,y) - \beta\,\mathrm{KL}\!\left(\pi_\theta(y\mid x)\,\|\,\pi_{\text{SFT}}(y\mid x)\right)\right]" />
+
+where `beta` is a hyperparameter controlling how tightly the policy stays near `pi_SFT`. A larger `beta` means more conservative updates; `beta = 0` removes the constraint entirely (risk of reward hacking).
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does the RM loss use the difference r(x, y_w) - r(x, y_l) inside sigmoid rather than directly predicting a score for each response independently?",
+    options: [
+      { text: "Because human feedback is inherently comparative — annotators judge which of two responses is better, not absolute quality. The pairwise difference is the natural quantity to model, and it also cancels out prompt-level reward biases that would affect both responses equally.", correct: true, explain: "If the absolute reward for a prompt is high (e.g. easy, well-specified prompt), both r(y_w) and r(y_l) shift up equally. The margin r(y_w) - r(y_l) is invariant to this prompt-level offset. This makes the RM focus on what the human comparison actually measures: the relative quality of the two responses." },
+      { text: "Training on the difference is more numerically stable because sigmoid of a large positive number saturates less quickly than softmax over two separate scores.", correct: false, explain: "Sigmoid of a large positive number does saturate (approaching 1), which is fine — it means the model is confident. Numerical stability is not the motivation. The motivation is that human labels are comparisons, and the model should match that data-generating process." },
+      { text: "The difference formulation allows the reward model to be applied to single responses during PPO without modification, whereas joint scoring of pairs would require a separate architecture.", correct: false, explain: "The reward model always scores single responses during PPO — r_phi(x, y) produces a scalar for any (prompt, response) pair. The pairwise structure is only in training. Using differences during training and single scores during inference is not a contradiction — it is the intended design." },
+    ],
+  }}
+  revealExpr="\mathcal{L}_{\text{RM}} = -\log\sigma\!\bigl(r(y_w) - r(y_l)\bigr) \;\Rightarrow\; \text{margin encodes relative preference, cancels prompt bias}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "In the PPO objective `L_PPO = E[r(x,y) - beta * KL(pi || pi_SFT)]`, increasing beta makes the policy stay closer to pi_SFT. What is the trade-off as beta grows large?",
+    options: [
+      { text: "Large beta means the KL penalty dominates; any step away from pi_SFT is heavily penalized. The policy barely changes from its SFT initialization, so it remains helpful and coherent — but it cannot improve much on the RM score. There is a bias-variance trade-off: high beta = low reward hacking risk but low alignment gain.", correct: true, explain: "The optimal policy under this objective balances two forces: maximize r_phi(x,y) (alignment signal) and stay close to pi_SFT (language model quality). Very large beta effectively turns off RL — the policy stays at pi_SFT regardless of the reward signal. InstructGPT tuned beta ≈ 0.02 empirically." },
+      { text: "Large beta causes the PPO clipping boundary epsilon to grow proportionally, widening the trust region and allowing larger per-step parameter updates.", correct: false, explain: "Beta and epsilon are independent hyperparameters in different parts of the algorithm. Beta controls the KL penalty in the reward function; epsilon controls the per-minibatch probability ratio clip in PPO. They do not interact directly." },
+      { text: "Large beta makes the policy memorize the SFT training data, increasing the risk of overfitting to the demonstration examples rather than generalizing from the reward model.", correct: false, explain: "The KL penalty is computed on the RL prompt distribution, not the SFT training set. It measures divergence in action probabilities, not data memorization. The risk of large beta is under-optimization of the reward, not overfitting to SFT demonstrations." },
+    ],
+  }}
+  revealExpr="\text{High } \beta \Rightarrow \pi_\theta \approx \pi_{\text{SFT}} \Rightarrow \text{reward gain} \approx 0 \;\;|\;\; \text{Low } \beta \Rightarrow \text{reward hacking risk}"
+/>
+
+<SrsCard id="instructgpt-rm-loss" paper="instructgpt" prompt="Write the RM training loss for a preference pair (x, y_w, y_l) and explain what minimizing it does to the reward values." answer="L_RM = -log(sigmoid(r(x, y_w) - r(x, y_l))). Minimizing this loss maximizes the log-probability that the model assigns a higher reward to the preferred response y_w than to the rejected response y_l. The sigmoid of the margin gives the preference probability; the log makes it a smooth surrogate for ranking accuracy." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the PPO objective for InstructGPT, the KL term is KL(pi_theta || pi_SFT). What does this direction of KL mean, and why is it used instead of KL(pi_SFT || pi_theta)?", options: [
+    { text: "KL(pi_theta || pi_SFT) is the 'forward KL' from the current policy to the SFT reference. It penalizes the current policy for placing probability mass where pi_SFT has low density — preventing the policy from producing outputs the SFT model would consider very unlikely (e.g. degenerate repetitions or off-distribution text).", correct: true, explain: "KL(P||Q) = E_P[log P/Q] is large when P assigns mass to regions where Q is small. Here P = pi_theta and Q = pi_SFT: the policy is penalized for generating sequences that pi_SFT would find improbable. This directly guards against reward hacking through degenerate outputs." },
+    { text: "KL(pi_theta || pi_SFT) is cheaper to compute because it only requires sampling from pi_theta, which is the model currently being trained, rather than from pi_SFT which would require a separate forward pass.", correct: false, explain: "Computing either direction of KL requires evaluating log-probabilities from both models. The choice of direction is not about computational cost but about what behavior is penalized: KL(pi_theta || pi_SFT) penalizes mass on low-pi_SFT regions; KL(pi_SFT || pi_theta) penalizes low mass on high-pi_SFT regions." },
+    { text: "The direction does not matter in practice because for large models the KL divergence is approximately symmetric around the SFT initialization.", correct: false, explain: "KL is never symmetric in general, and becomes more asymmetric as the two distributions diverge. The direction matters: KL(P||Q) encourages P to be zero-avoiding relative to Q (mode-seeking); KL(Q||P) encourages P to cover all modes of Q (mean-seeking). The choice has real consequences for which outputs are penalized." },
+  ]},
+  { prompt: "InstructGPT found that a 1.3B InstructGPT model was preferred by human raters over a 175B GPT-3 model. What does this imply about the relationship between model size and alignment?", options: [
+    { text: "Alignment is not simply a function of scale — a smaller model trained with RLHF to follow instructions can outperform a much larger model trained only on next-token prediction. The RLHF objective directly optimizes for human preference, whereas pretraining optimizes for text prediction which is only indirectly related.", correct: true, explain: "This was one of the key empirical findings of the paper. A 1.3B InstructGPT model (100x smaller) was preferred 71% of the time over a 175B GPT-3 model. Scale helps with capability, but alignment requires optimizing the right objective." },
+    { text: "It implies that 175B is beyond the threshold where additional parameters cause performance degradation — a form of double descent at the alignment level.", correct: false, explain: "Double descent is a phenomenon in supervised learning related to model capacity and data size. There is no evidence of alignment-level double descent here. The comparison is between a model trained with RLHF and one trained only on next-token prediction — the architecture and objective differ." },
+    { text: "It implies that GPT-3's 175B parameters are mostly used for factual knowledge retrieval, and instruction following requires only the smaller reasoning capacity found in 1.3B models.", correct: false, explain: "This is speculative and not the paper's conclusion. The 1.3B InstructGPT model is fine-tuned from GPT-3 (175B is the base), so it starts with the same knowledge. The 1.3B refers to a separate, smaller model in the RLHF pipeline — preference over GPT-3 (175B, no RLHF) reflects alignment, not model size." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the four steps of the RLHF pipeline in the correct order:
+
+<LineReorder client:load lines={[
+  "SFT: fine-tune GPT-3 on human-written (prompt, demonstration) pairs to get pi_SFT",
+  "Collect preference data: for each prompt, generate K responses from pi_SFT, have humans rank them pairwise",
+  "Train reward model: minimize pairwise log-loss L_RM = -E[log sigmoid(r(y_w) - r(y_l))] on the preference dataset",
+  "PPO fine-tuning: optimize pi_theta with PPO to maximize r(x,y) - beta * KL(pi_theta || pi_SFT)",
+]} />
+
+Fill in the blank — the total reward signal used during PPO rollouts:
+
+```text
+def total_reward(prompt, response, reward_model, sft_policy, current_policy, beta):
+    r_rm = reward_model(prompt, response)
+    kl   = _______
+    return r_rm - beta * kl
+```
+
+<FillBlank answer="kl_divergence(current_policy, sft_policy, prompt, response)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "During PPO fine-tuning in InstructGPT, the reward model is frozen (not updated). Why?", options: [
+    { text: "If the reward model were updated jointly with the policy, the policy could find outputs that change both its own behavior and the reward model's scoring simultaneously — a form of co-adaptation. Freezing the RM ensures it remains a stable proxy for human preferences throughout the RL phase.", correct: true, explain: "This is similar to why the target network is frozen in DQN. If both the policy and the reward model update simultaneously, the target is a moving surface — the policy may chase the reward model in a feedback loop that drifts far from human preferences. Freezing the RM grounds the optimization to a fixed, human-derived objective." },
+    { text: "Updating the reward model during PPO requires new human annotations, which are expensive to collect in real time. Freezing it avoids the need for an annotation pipeline during training.", correct: false, explain: "While human annotation cost is a practical concern, it is not the primary reason. The RM could in principle be updated offline with periodic annotation batches. The deeper reason is training stability: a moving RM target causes co-adaptation instability." },
+    { text: "The reward model and the policy share weights in InstructGPT; freezing the RM is equivalent to freezing the value head, which is required by PPO's actor-critic formulation.", correct: false, explain: "In InstructGPT, the reward model is a separate network initialized from the SFT policy but trained independently. It does not share weights with the PPO policy during RL. The RM produces a scalar score; it is not the value head." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the reward model pairwise log-loss in NumPy. Given 1-D arrays `r_winners` and `r_losers` (scalar reward values for preferred and rejected responses respectively), return the mean RM loss: `mean(-log(sigmoid(r_w - r_l)))`.
+
+<HintFade client:load
+  hints={[
+    "The margin for each pair is simply r_winners - r_losers. Apply the sigmoid function: sigmoid(x) = 1 / (1 + exp(-x)). NumPy: np.exp and element-wise operations.",
+    "Once you have the sigmoid values (preference probabilities), take the element-wise log: np.log(probs). The RM loss per pair is -log(sigmoid(margin)). Return the mean.",
+    "Full solution: margin = r_winners - r_losers; probs = 1 / (1 + np.exp(-margin)); return np.mean(-np.log(probs)). For numerical stability you may also use scipy.special.log_expit, but the direct form is fine for this exercise.",
+  ]}
+  solutionCode={`import numpy as np
+
+def rm_loss(r_winners, r_losers):
+    """
+    r_winners: (N,) reward scores for preferred responses
+    r_losers:  (N,) reward scores for rejected responses
+    returns:   scalar mean pairwise RM log-loss
+    """
+    margin = r_winners - r_losers
+    probs  = 1.0 / (1.0 + np.exp(-margin))
+    return np.mean(-np.log(probs))`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def rm_loss(r_winners, r_losers):
+    """
+    r_winners: (N,) reward scores for preferred responses
+    r_losers:  (N,) reward scores for rejected responses
+    returns:   scalar mean pairwise RM log-loss
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity checks
+r_w = np.array([2.0, 1.0,  0.0])
+r_l = np.array([0.0, 0.0,  0.0])
+
+result = rm_loss(r_w, r_l)
+if result is not None:
+    print("RM loss:", round(result, 4))
+    # tied pair (r_w=r_l=0) gives loss = log(2) ≈ 0.6931
+    # perfect separation (r_w >> r_l) gives near 0
+else:
+    print("Not yet implemented — return a scalar")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def rm_loss(r_winners, r_losers):
+    margin = r_winners - r_losers
+    probs  = 1.0 / (1.0 + np.exp(-margin))
+    return np.mean(-np.log(probs))
+`}
+  testCode={`import numpy as np
+
+def rm_loss(r_winners, r_losers):
+    margin = r_winners - r_losers
+    probs  = 1.0 / (1.0 + np.exp(-margin))
+    return np.mean(-np.log(probs))
+
+# Test 1: loss is non-negative
+r_w = np.array([1.0, 2.0, 0.5])
+r_l = np.array([0.0, 1.0, -0.5])
+loss = rm_loss(r_w, r_l)
+assert loss >= 0, f"Loss must be non-negative, got {loss}"
+
+# Test 2: perfect preferences (r_w >> r_l) give near-zero loss
+r_w2 = np.array([10.0, 10.0, 10.0])
+r_l2 = np.array([-10.0, -10.0, -10.0])
+loss2 = rm_loss(r_w2, r_l2)
+assert loss2 < 1e-4, f"Near-perfect preferences should give near-zero loss, got {loss2}"
+
+# Test 3: tied preferences (r_w == r_l) give log(2)
+r_w3 = np.array([0.0, 1.0, -1.0])
+r_l3 = np.array([0.0, 1.0, -1.0])
+loss3 = rm_loss(r_w3, r_l3)
+assert np.isclose(loss3, np.log(2), atol=1e-6), f"Tied preferences should give log(2)={np.log(2):.4f}, got {loss3}"
+
+# Test 4: scalar output
+assert np.isscalar(loss) or np.asarray(loss).ndim == 0, "Output must be a scalar"
+
+# Test 5: larger margin -> lower loss (monotone)
+r_w4 = np.array([1.0])
+r_l4 = np.array([0.0])
+r_w5 = np.array([2.0])
+r_l5 = np.array([0.0])
+assert rm_loss(r_w4, r_l4) > rm_loss(r_w5, r_l5), "Larger margin should give lower loss"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The RM loss formula `-log(sigmoid(r_w - r_l))` has the same mathematical form as binary cross-entropy. What is the 'label' and what is the 'predicted probability' in this correspondence?", options: [
+    { text: "Label = 1 (human prefers y_w). Predicted probability = sigmoid(r_w - r_l) = P(y_w preferred). The RM loss is exactly the binary cross-entropy for the event 'y_w is preferred' given the model's preference probability.", correct: true, explain: "Binary cross-entropy for a positive label: -log(p). Here p = sigmoid(r_w - r_l) is the RM's predicted probability that y_w is preferred over y_l. The dataset always has y_w as the winner, so the label is always 1 — it is a one-class log-loss. If the RM could also be trained on the rejected side, the full BCE would add a -log(1-p) term for the loser." },
+    { text: "Label = r_w (the actual reward value). Predicted probability = sigmoid(r_l) (the rejected response score). The RM minimizes the distance between the two reward distributions.", correct: false, explain: "The RM loss is not regressing reward values. r_w and r_l are the RM's own outputs (learned scalars), not labels. The label is the human preference judgment (y_w > y_l), encoded as a binary 1. The loss trains the RM to produce margins consistent with that judgment." },
+    { text: "Label = margin = r_w - r_l (the reward difference). Predicted probability = sigmoid(margin). The RM learns to maximize the margin, not a probability.", correct: false, explain: "The label in the probabilistic model is the preference outcome (y_w preferred = 1), not the margin itself. The margin is the model's internal quantity that gets converted to a probability via sigmoid. Maximizing the margin is a consequence of minimizing the log-loss, but the formal label is binary." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2203.02155.pdf" title="Training Language Models to Follow Instructions with Human Feedback (Ouyang et al. 2022)" />
+
+Suggested reading order: §2 (Methods — the full SFT + RM + PPO pipeline description) → §3.3 (Results: reward model evaluation) → §3.4 (Results: RL fine-tuning and human preference evaluations).
+
+</StageSection>
