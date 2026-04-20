@@ -1,0 +1,283 @@
+---
+slug: clip
+title: "Learning Transferable Visual Models From Natural Language Supervision"
+authors: "Radford et al."
+year: 2021
+era: transformer
+arxivId: "2103.00020"
+estimatedMinutes: 50
+prerequisites: ["transformer", "vit"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import ClipMatrix from "../../components/widgets/ClipMatrix.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before CLIP, the standard recipe for visual recognition was: collect a labelled dataset (ImageNet: 1.28M images, 1000 classes), train a supervised model, ship. This approach is powerful but brittle — if you want to classify a category not in those 1000 labels, you must re-label data and retrain. The label set is a hard ceiling.
+
+CLIP (Contrastive Language-Image Pre-training) breaks that ceiling by learning from **natural language supervision**. Instead of fixed integer labels, each image is paired with a free-form caption scraped from the web. OpenAI assembled 400 million such (image, text) pairs. An image encoder and a text encoder are jointly trained so that matching pairs have high cosine similarity and mismatched pairs have low similarity. At inference time, zero-shot classification requires no additional training: you write text prompts ("a photo of a cat", "a photo of a dog", ...) for any label set, encode them, and pick the label whose embedding is closest to the image embedding.
+
+<PredictThenReveal client:load predictPrompt="Before playing with the widget: if you lower the temperature in a softmax over similarity logits, what happens to the probability distribution? Does the diagonal get sharper or flatter?">
+  Lowering temperature divides the logits by a smaller number, making the differences between them larger before the softmax. A larger spread of inputs to softmax produces a sharper (more peaked) distribution. So at low temperature the diagonal entries — the correct image-text matches — dominate strongly, and off-diagonal entries collapse toward zero.
+</PredictThenReveal>
+
+**Interact with the widget:** select "image → text" and drag temperature to 0.10. Notice the diagonal turns dark blue and off-diagonal cells go nearly white — the model is very confident. Now raise temperature to 1.5: the matrix grays out and all cells look similar — the model is uncertain. This temperature parameter (tau in the paper) is learned during training, not hand-tuned.
+
+<ClipMatrix client:load />
+
+<PredictThenReveal client:load predictPrompt="Switch to 'text → image' direction. Does the matrix change? Why or why not for a perfectly aligned square matrix?">
+  For a square matrix with the same four items on both axes, the visual pattern stays the same — the diagonal is still the correct match in both directions. But the probabilities differ: row-softmax normalizes each image's scores over all texts, while column-softmax normalizes each text's scores over all images. CLIP's training objective explicitly pushes both directions simultaneously, which is why the loss is symmetric.
+</PredictThenReveal>
+
+<SrsCard id="clip-zero-shot" paper="clip" prompt="How does CLIP perform zero-shot image classification at inference time, without any classifier head trained on the target dataset?" answer="Text prompts like 'a photo of a {label}' are encoded by the text encoder. The image is encoded by the image encoder. The label whose text embedding has the highest cosine similarity with the image embedding is chosen. No gradient updates are needed." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the key difference between CLIP's training signal and standard ImageNet supervised training?", options: [
+    { text: "CLIP uses natural language captions as supervision rather than fixed integer class labels, enabling it to learn open-vocabulary visual concepts from 400M web image-text pairs", correct: true, explain: "ImageNet provides a discrete label (integer 0–999) per image. CLIP pairs each image with a free-form text string, so the model must align continuous text representations with image representations — a much richer signal that generalizes to arbitrary label sets at test time." },
+    { text: "CLIP uses a larger ResNet image backbone than standard ImageNet models, giving it higher capacity", correct: false, explain: "Backbone size is not the distinguishing feature. CLIP uses both ResNet and ViT image encoders, comparable in size to standard models. The key innovation is the contrastive image-text objective, not the backbone architecture." },
+    { text: "CLIP trains on ImageNet but replaces the cross-entropy loss with a contrastive loss between augmented views of the same image", correct: false, explain: "That describes self-supervised contrastive methods like SimCLR or MoCo, not CLIP. CLIP trains on 400M web-scraped (image, text) pairs — the text caption, not an augmented image, is the positive pair." },
+  ]},
+  { prompt: "CLIP achieves strong zero-shot ImageNet accuracy without being trained on ImageNet. Which property of its training makes zero-shot transfer possible?", options: [
+    { text: "The text encoder has learned that 'a photo of a cat' and 'cat' refer to the same concept, so any new label can be expressed in language and encoded without retraining", correct: true, explain: "Because CLIP optimizes image-text alignment over internet-scale data, it absorbs the semantic structure of language. At test time you provide class names as text prompts; the text encoder maps them into the same embedding space the image encoder uses, enabling classification without gradient updates." },
+    { text: "CLIP's image encoder is pre-trained on ImageNet and then fine-tuned on web captions, so it retains ImageNet knowledge", correct: false, explain: "CLIP trains both encoders from scratch using only the contrastive image-text objective on web data — there is no ImageNet supervised pre-training step in the original CLIP pipeline." },
+    { text: "Zero-shot transfer works because the model memorizes 400M captions and retrieves the nearest one at inference time", correct: false, explain: "CLIP does not store or retrieve captions at inference time. The encoders compress each input into a single d-dimensional vector; inference is a matrix multiplication between the image embedding and a small set of class-label text embeddings." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Given a training batch of N (image, text) pairs, CLIP computes two sets of embeddings:
+
+<Math display expr="\mathbf{I} \in \mathbb{R}^{N \times d}, \quad \mathbf{T} \in \mathbb{R}^{N \times d}" />
+
+Both are L2-normalized so that the dot product equals cosine similarity. The logit matrix is:
+
+<Math display expr="\mathbf{L} = \frac{\mathbf{I} \mathbf{T}^\top}{\tau}" />
+
+where tau is a learned (scalar) temperature parameter. The diagonal of L holds the scores for correct pairs; the off-diagonal entries are scores for incorrect pairs. The training loss is symmetric cross-entropy over the rows (image-to-text direction) and columns (text-to-image direction):
+
+<Math display expr="\mathcal{L} = \frac{1}{2}\left[\text{CE}(\mathbf{L},\, \mathbf{y}) + \text{CE}(\mathbf{L}^\top,\, \mathbf{y})\right], \quad \mathbf{y} = [0, 1, \ldots, N-1]" />
+
+where CE(L, y) treats each row i as a softmax classification problem with correct class y_i = i, and CE(L^T, y) does the same column-wise.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does CLIP L2-normalize both I and T before computing the logit matrix?",
+    options: [
+      { text: "L2-normalization makes every dot product I_i · T_j equal to the cosine similarity, so the logits are bounded in [-1/tau, 1/tau] regardless of embedding magnitude", correct: true, explain: "For unit-norm vectors, I_i · T_j = ||I_i|| ||T_j|| cos(theta) = cos(theta). Without normalization, the dot products depend on both direction and magnitude, mixing semantic similarity with arbitrary scale factors. Normalization isolates the directional (semantic) component and keeps logits in a predictable range that tau can meaningfully control." },
+      { text: "L2-normalization prevents vanishing gradients by ensuring every gradient has unit norm", correct: false, explain: "L2-normalization is applied to the embeddings, not to the gradients. It does not directly control gradient magnitudes. Its purpose is to make dot products measure cosine similarity rather than raw inner products." },
+      { text: "L2-normalization replaces the need for a bias term in the linear projection layers of both encoders", correct: false, explain: "Bias terms in the encoder projection layers are independent of the normalization applied to final embeddings. L2-normalization affects how similarity is measured between embeddings, not the internal computations of the encoders." },
+    ],
+  }}
+  revealExpr="\hat{\mathbf{I}}_i = \frac{\mathbf{I}_i}{\|\mathbf{I}_i\|_2} \Rightarrow \hat{\mathbf{I}}_i \cdot \hat{\mathbf{T}}_j = \cos\theta_{ij} \in [-1,\,1]"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does CLIP use symmetric cross-entropy — averaging the image-to-text loss and the text-to-image loss — rather than just one direction?",
+    options: [
+      { text: "Both retrieval directions are useful: image-to-text retrieval (find the right caption for an image) and text-to-image retrieval (find the right image for a caption) are both valid downstream tasks, so training on both directions produces a symmetric similarity metric that works equally well in either direction", correct: true, explain: "If you only minimize the row-wise loss, you encourage each image embedding to be close to its matching text but do not explicitly push each text embedding away from non-matching images. The column-wise loss enforces the other direction. Together they make the learned similarity metric symmetric and useful for both image search and text-conditioned retrieval." },
+      { text: "Averaging two losses provides gradient variance reduction equivalent to doubling the batch size", correct: false, explain: "The two losses are not independent samples from the same distribution — they share the same logit matrix, just transposed. The primary motivation is symmetry and dual-direction learning, not variance reduction." },
+      { text: "The symmetric loss ensures the temperature parameter tau receives gradients from both encoders equally", correct: false, explain: "Tau appears in both CE(L,y) and CE(L^T,y) since L = I T^T / tau. It receives gradients from both loss terms regardless of whether they are averaged. The motivation for symmetry is the bidirectional training signal, not gradient flow to tau." },
+    ],
+  }}
+  revealExpr="\mathcal{L} = \frac{1}{2}\bigl[\underbrace{\text{CE}(\mathbf{L},\mathbf{y})}_{\text{image}\to\text{text}} + \underbrace{\text{CE}(\mathbf{L}^\top,\mathbf{y})}_{\text{text}\to\text{image}}\bigr]"
+/>
+
+<SrsCard id="clip-loss" paper="clip" prompt="Write CLIP's contrastive loss. What are I, T, L, tau, and y? Why is the loss symmetric?" answer="I (N x d) and T (N x d) are L2-normalized image and text embeddings. L = I T^T / tau are the scaled logit matrix. y = [0, ..., N-1] are the ground-truth diagonal indices. Loss = (CE(L, y) + CE(L^T, y)) / 2. It is symmetric because both image-to-text and text-to-image retrieval directions are optimized simultaneously." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In CLIP's loss, what is the role of the temperature parameter tau?", options: [
+    { text: "tau scales the logits before softmax: a smaller tau sharpens the distribution (increases confidence), a larger tau flattens it. CLIP learns tau jointly with the encoder weights rather than fixing it as a hyperparameter", correct: true, explain: "The logit matrix L = I T^T / tau. When tau is small, differences between cosine similarities are amplified, producing a peaked softmax. When tau is large, all logits are similar and the softmax is uniform. CLIP initializes tau = 1/0.07 ≈ 14 and learns it, allowing the model to tune its own confidence." },
+    { text: "tau controls the learning rate warmup schedule for both encoders independently", correct: false, explain: "tau is an embedding-space temperature parameter, not a learning rate schedule. It is a single scalar multiplied into the logit matrix before the cross-entropy loss, directly affecting the sharpness of the similarity distribution." },
+    { text: "tau is a fixed constant set to 1/sqrt(d) to normalize for embedding dimension d", correct: false, explain: "1/sqrt(d) is the scaling factor used in transformer self-attention (to prevent dot products from growing with dimension). CLIP's tau is a different parameter: it is a learned scalar applied to L2-normalized embeddings whose dot products are already bounded in [-1,1]." },
+  ]},
+  { prompt: "CLIP trains with batch size N = 32768. Why does a larger batch size improve the contrastive objective?", options: [
+    { text: "A larger batch provides more negative examples per anchor: each image must score higher than N-1 texts rather than N-1 smaller, making the learned representations more discriminative", correct: true, explain: "The cross-entropy loss for image i treats all other N-1 texts in the batch as negatives. With N=32768, the model must distinguish the correct text from 32767 others — a much harder task than with N=256. Harder negatives force the encoders to produce tighter, more separated embeddings, improving representation quality." },
+    { text: "Larger batches reduce the variance of the L2-normalization step, stabilizing training", correct: false, explain: "L2-normalization is applied per-sample independently; its statistics do not depend on batch size. The batch-size benefit comes from the number of negatives in the contrastive loss, not from normalization stability." },
+    { text: "With larger batches, the temperature tau can be set lower, which increases learning speed", correct: false, explain: "tau is learned jointly and its value is not mechanically tied to batch size. Larger batches are beneficial because they increase the number of in-batch negatives, not because they allow a different tau." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange CLIP's five-step contrastive training forward pass in the correct order:
+
+<LineReorder client:load lines={[
+  "Encode all images in the batch: I_f = image_encoder(images)  # (N, d)",
+  "Encode all texts in the batch: T_f = text_encoder(texts)    # (N, d)",
+  "L2-normalize both: I = I_f / ||I_f||, T = T_f / ||T_f||",
+  "Compute logit matrix: L = I @ T.T / temperature             # (N, N)",
+  "Compute symmetric CE loss: loss = (CE(L, labels) + CE(L.T, labels)) / 2",
+]} />
+
+Fill in the blank in CLIP's logit computation. `I` and `T` are already L2-normalized, `temperature` is a scalar:
+
+```text
+def clip_logits(I, T, temperature):
+    # I: (N, d), T: (N, d), both L2-normalized
+    # returns: (N, N) logit matrix
+    return ______
+```
+
+<FillBlank answer="I @ T.T / temperature" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pseudocode, why must L2-normalization happen before computing I @ T.T, not after?", options: [
+    { text: "If you compute I @ T.T first, you get raw dot products that depend on embedding magnitudes; normalizing after does not recover cosine similarity because the matrix product mixes scales from both I and T", correct: true, explain: "Cosine similarity between row i of I and row j of T requires both vectors to be unit-norm before the dot product. The identity (I/||I||) @ (T/||T||).T = cos_similarity(I, T) holds element-wise only when normalization is applied per-row before the multiplication." },
+    { text: "Normalizing after the matrix multiply would cause a division-by-zero error for zero-vector embeddings", correct: false, explain: "Division-by-zero is a concern when normalizing, but it would affect any normalization step, not specifically post-multiply normalization. The real issue is that (I @ T.T) / (||I|| * ||T||) is not the same operation as (I / ||I||) @ (T / ||T||).T." },
+    { text: "The temperature division must precede normalization to keep gradients numerically stable", correct: false, explain: "Temperature scaling is applied to the already-computed logit matrix; the order relative to normalization does not affect numerical stability in the way described. The correct order is: normalize first, multiply, then scale by temperature." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement CLIP's symmetric contrastive loss in NumPy. Given I (N x d) and T (N x d), both already L2-normalized, compute the scalar loss. Labels are the diagonal indices [0, 1, ..., N-1].
+
+<HintFade client:load
+  hints={[
+    "Start by computing the logit matrix: logits = I @ T.T / temperature. Then define labels = np.arange(N). You need cross-entropy in two directions: rows (image-to-text) and columns (text-to-image).",
+    "For cross-entropy: softmax each row, then -log(prob[i, labels[i]]). Equivalently: log_softmax = logits - log(sum(exp(logits), axis=1, keepdims=True)); ce = -mean(log_softmax[range(N), labels]). Apply this to logits (rows) and logits.T (columns).",
+    "Full solution: logits = I @ T.T / temperature; labels = np.arange(len(I)); def ce(l): ls = l - np.log(np.sum(np.exp(l - l.max(1,keepdims=True)), axis=1, keepdims=True)) - l.max(1,keepdims=True); return -np.mean(ls[range(len(l)), labels]); return (ce(logits) + ce(logits.T)) / 2",
+  ]}
+  solutionCode={`import numpy as np
+
+def clip_loss(I, T, temperature=0.07):
+    N = len(I)
+    logits = I @ T.T / temperature
+    labels = np.arange(N)
+
+    def cross_entropy(l):
+        # numerically stable log-softmax
+        l_shifted = l - l.max(axis=1, keepdims=True)
+        log_sum_exp = np.log(np.sum(np.exp(l_shifted), axis=1, keepdims=True))
+        log_probs = l_shifted - log_sum_exp
+        return -np.mean(log_probs[np.arange(len(l)), labels])
+
+    return (cross_entropy(logits) + cross_entropy(logits.T)) / 2`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def clip_loss(I, T, temperature=0.07):
+    # I: (N, d) L2-normalized image embeddings
+    # T: (N, d) L2-normalized text embeddings
+    # returns: scalar contrastive loss
+    N = len(I)
+    # TODO: compute logits, labels, symmetric CE
+    pass
+
+# Quick sanity check — perfect alignment should give low loss
+N, d = 4, 8
+np.random.seed(42)
+v = np.random.randn(N, d)
+I = v / np.linalg.norm(v, axis=1, keepdims=True)
+T = I.copy()  # identical embeddings => perfect alignment
+print("perfect loss:", clip_loss(I, T))  # should be near log(1/N) ≈ -1.386 * -1 = 1.386 for N=4... actually 0 with temp=0.07 because diagonal >> off-diag
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def clip_loss(I, T, temperature=0.07):
+    N = len(I)
+    logits = I @ T.T / temperature
+    labels = np.arange(N)
+
+    def cross_entropy(l):
+        l_shifted = l - l.max(axis=1, keepdims=True)
+        log_sum_exp = np.log(np.sum(np.exp(l_shifted), axis=1, keepdims=True))
+        log_probs = l_shifted - log_sum_exp
+        return -np.mean(log_probs[np.arange(len(l)), labels])
+
+    return (cross_entropy(logits) + cross_entropy(logits.T)) / 2
+`}
+  testCode={`import numpy as np
+
+def clip_loss(I, T, temperature=0.07):
+    N = len(I)
+    logits = I @ T.T / temperature
+    labels = np.arange(N)
+
+    def cross_entropy(l):
+        l_shifted = l - l.max(axis=1, keepdims=True)
+        log_sum_exp = np.log(np.sum(np.exp(l_shifted), axis=1, keepdims=True))
+        log_probs = l_shifted - log_sum_exp
+        return -np.mean(log_probs[np.arange(len(l)), labels])
+
+    return (cross_entropy(logits) + cross_entropy(logits.T)) / 2
+
+# Test 1: loss is non-negative
+N, d = 4, 8
+np.random.seed(0)
+raw = np.random.randn(N, d)
+I = raw / np.linalg.norm(raw, axis=1, keepdims=True)
+np.random.seed(1)
+raw2 = np.random.randn(N, d)
+T = raw2 / np.linalg.norm(raw2, axis=1, keepdims=True)
+loss = clip_loss(I, T)
+assert loss >= 0, f"Loss must be non-negative, got {loss}"
+
+# Test 2: perfect alignment gives lower loss than random
+I_perf = I.copy()
+T_perf = I.copy()  # identical embeddings
+loss_perfect = clip_loss(I_perf, T_perf)
+loss_random = clip_loss(I, T)
+assert loss_perfect < loss_random, f"Perfect alignment loss {loss_perfect} should be less than random {loss_random}"
+
+# Test 3: loss scales with temperature — higher temperature gives higher loss for random embeddings
+loss_low_temp = clip_loss(I, T, temperature=0.07)
+loss_high_temp = clip_loss(I, T, temperature=1.0)
+assert loss_low_temp != loss_high_temp, "Loss should differ across temperatures"
+
+# Test 4: loss is symmetric — swapping I and T gives same value
+loss_fwd = clip_loss(I, T)
+loss_rev = clip_loss(T, I)
+assert abs(loss_fwd - loss_rev) < 1e-9, f"Loss should be symmetric: {loss_fwd} vs {loss_rev}"
+
+# Test 5: loss with N=1 is zero (only one pair, no negatives)
+v = np.array([[1.0, 0.0]])
+loss_single = clip_loss(v, v)
+assert abs(loss_single) < 1e-9, f"Single-pair loss should be 0, got {loss_single}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the clip_loss implementation, why do we subtract l.max(axis=1, keepdims=True) before computing the log-sum-exp?", options: [
+    { text: "This is the log-sum-exp numerical stability trick: subtracting the row maximum prevents exp() from overflowing to infinity for large logits, while leaving the resulting log-softmax values mathematically unchanged", correct: true, explain: "log(sum(exp(l_i))) = max(l) + log(sum(exp(l_i - max(l)))). The second term has all non-positive exponents, so exp() stays in (0, 1]. The log-softmax is log_prob_j = l_j - max(l) - log(sum(exp(l - max(l)))), which is numerically safe. Without the shift, l_i/temperature can be ~14x larger than typical logits, easily overflowing float32." },
+    { text: "Subtracting the max normalizes the logits so the loss is scale-invariant, equivalent to L2 normalization in embedding space", correct: false, explain: "The max subtraction is purely a numerical trick — it does not change the mathematical value of the loss (the max cancels out in the log-softmax formula). It is not equivalent to L2 normalization, which operates on embedding vectors before the logit computation." },
+    { text: "It prevents the gradient from vanishing when all logits are similar, by centering them around zero", correct: false, explain: "The primary purpose is overflow prevention, not gradient flow. When logits are similar, all exp values are similar regardless of centering, and gradients are well-behaved. The issue the trick solves is large positive logits causing exp() to return inf." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2103.00020.pdf" title="CLIP: Learning Transferable Visual Models From Natural Language Supervision" />
+
+Suggested reading order: §2.3 (Contrastive Pre-training — the training objective and batch construction) → §3 (Experiments — breadth of zero-shot transfer) → §3.1.2 (Zero-Shot ImageNet — comparison to supervised baselines and few-shot ResNets).
+
+</StageSection>
