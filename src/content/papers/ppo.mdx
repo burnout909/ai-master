@@ -1,0 +1,270 @@
+---
+slug: ppo
+title: "Proximal Policy Optimization Algorithms"
+authors: "Schulman, Wolski, Dhariwal, Radford, Klimov"
+year: 2017
+era: alignment
+arxivId: "1707.06347"
+estimatedMinutes: 50
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { PpoClip } from "../../components/widgets/PpoClip.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Policy gradient methods (REINFORCE and its variants) update network parameters in the direction that makes high-reward actions more likely. The problem is step size: a single gradient update can move the policy so far from where the data was collected that the new policy behaves entirely differently — performance collapses, and you can never recover because the old data is no longer representative of the new policy. This is the "destructively large update" problem.
+
+TRPO (Trust Region Policy Optimization, 2015) solved it by adding a hard KL-divergence constraint: the new policy may not be more than a fixed distance from the old one in probability space. The constraint ensures safe, monotonically improving updates. But enforcing it requires computing second-order derivatives (a conjugate-gradient solve on the Fisher information matrix) — expensive, tricky to implement, and hard to combine with architectures that share parameters between the policy and value networks.
+
+PPO (Schulman et al., 2017) achieves the same trust-region effect with a single line of algebra. Define the probability ratio `r_t = pi_new(a|s) / pi_old(a|s)`. If the policy improves an action that already has `r > 1 + eps`, the additional gradient contribution is simply zeroed out — the **clip** stops rewarding the policy for straying further. If the policy is making a bad action less likely but `r` has already dropped below `1 - eps`, the same clipping applies. Result: a first-order optimizer (Adam) with trust-region-like safety.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if A > 0 (action was better than expected) and r is already 1.5 with eps = 0.2, what does L_CLIP equal — and crucially, what is its gradient with respect to r?">
+  With eps = 0.2 the clip range is [0.8, 1.2]. r = 1.5 exceeds the upper bound, so the min selects the clipped term: `clip(r, 0.8, 1.2) * A = 1.2 * A`. This value is constant in r — its gradient with respect to r is zero. No matter how much further the policy moves, it receives no additional gradient signal for that action. The trust region is enforced without any constraint solver.
+</PredictThenReveal>
+
+**Interact with the widget:** drag the ratio `r` slider past the upper clip boundary `1 + eps` while keeping A > 0. Watch the clipped objective flatline while the unclipped objective keeps growing. Then flip A negative and drag r below `1 - eps` — observe the symmetric flatline on the other side.
+
+<PpoClip client:load />
+
+<PredictThenReveal client:load predictPrompt="After exploring the widget: when A < 0 and r = 0.5 (eps = 0.2), the clip range is [0.8, 1.2]. The unclipped term is 0.5 * A and the clipped term is 0.8 * A. Since A < 0, which is larger (less negative) and which does min pick?">
+  When A < 0, both terms are negative. `0.5 * A` is more negative than `0.8 * A` (because 0.5 < 0.8 and A < 0 flips the inequality). So `min(0.5*A, 0.8*A) = 0.5 * A` — the **unclipped** term. The policy is not penalized for reducing a bad action's probability below the trust region because reducing bad-action probability is beneficial. Clipping is asymmetric: it only removes the incentive to go further when doing so cannot be justified by current data.
+</PredictThenReveal>
+
+<SrsCard id="ppo-clip-intuition" paper="ppo" prompt="What does the PPO clipped surrogate do when r > 1 + eps and A > 0, and why?" answer="The min operator selects the clipped term clip(r, 1-eps, 1+eps) * A, which is constant in r at the boundary. The gradient of L_CLIP with respect to r is zero — further increases in the probability ratio earn no additional objective improvement. This replicates a trust region without a constraint solver." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does vanilla policy gradient suffer from destructively large updates?", options: [
+    { text: "A single gradient step can move the policy far from the data-collection distribution, making old advantage estimates invalid and causing performance collapse that is hard to recover from.", correct: true, explain: "Policy gradient estimates advantages under pi_old. If the update moves the policy far from pi_old, the collected data no longer represents the new policy's behavior. Gradient estimates become biased, the policy can enter a bad region, and subsequent data collection perpetuates the damage." },
+    { text: "Policy gradient uses stochastic mini-batches, which introduce so much variance that the gradient direction is unreliable even for small step sizes.", correct: false, explain: "Variance is a real issue for policy gradient (GAE and baselines address it), but it is distinct from the destructive-update problem. A correct gradient direction can still cause collapse if the step is too large. PPO addresses the step-size problem; GAE/baselines address variance." },
+    { text: "Policy gradient requires discrete action spaces; the problem disappears when using continuous actions because the gradient is well-defined everywhere.", correct: false, explain: "Policy gradient applies to both discrete and continuous action spaces (using log-probability gradients). The destructive-update problem exists in both settings." },
+  ]},
+  { prompt: "Why is TRPO hard to use in practice compared to PPO?", options: [
+    { text: "TRPO requires solving a constrained optimization problem using a conjugate-gradient procedure on the Fisher information matrix — a second-order method that is expensive and difficult to implement, especially with shared policy/value networks.", correct: true, explain: "The Fisher information matrix is the Hessian of the KL constraint. Computing it exactly requires O(n^2) operations in parameter count, which is infeasible for large networks. TRPO approximates it with conjugate gradient, but this still adds significant complexity and doesn't compose easily with architectures where policy and value share layers." },
+    { text: "TRPO has no convergence guarantee; PPO is provably convergent because it uses gradient clipping instead of a KL constraint.", correct: false, explain: "TRPO has theoretical monotonic improvement guarantees under its constraint. PPO trades some theoretical purity for practical simplicity. PPO's convergence properties are empirically strong but its theory is less complete than TRPO's." },
+    { text: "TRPO can only update the policy once per batch; PPO allows multiple gradient steps per batch, making PPO K times faster per epoch.", correct: false, explain: "This is actually a feature of PPO (multiple epochs of minibatch updates), not the primary reason TRPO is hard. TRPO's difficulty is the second-order optimization required to enforce the KL constraint." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The vanilla policy gradient surrogate — sometimes called the CPI (conservative policy iteration) objective — is:
+
+<Math display expr="L^{\text{CPI}}(\theta) = \hat{\mathbb{E}}_t \left[ \frac{\pi_\theta(a_t | s_t)}{\pi_{\theta_\text{old}}(a_t | s_t)} \hat{A}_t \right] = \hat{\mathbb{E}}_t \left[ r_t(\theta)\, \hat{A}_t \right]" />
+
+where `r_t(theta) = pi_new(a|s) / pi_old(a|s)` is the probability ratio and `A_hat_t` is the estimated advantage. Maximizing `L_CPI` without constraint would move the policy arbitrarily far for high-advantage actions.
+
+PPO introduces the **clipped surrogate**:
+
+<Math display expr="L^{\text{CLIP}}(\theta) = \hat{\mathbb{E}}_t \left[ \min\!\left( r_t(\theta)\,\hat{A}_t,\; \operatorname{clip}(r_t(\theta),\, 1-\varepsilon,\, 1+\varepsilon)\,\hat{A}_t \right) \right]" />
+
+The typical value is eps = 0.2. The min of the two terms makes `L_CLIP` a **lower bound** on `L_CPI` (for positive advantages): the clipped version is always as small or smaller than the unclipped version when r exceeds the boundary.
+
+<DerivationStep client:load
+  question={{
+    prompt: "If A > 0 and r just barely exceeds 1 + eps, which term does the min pick, and what does that imply for the gradient?",
+    options: [
+      { text: "The min picks the clipped term clip(r, 1-eps, 1+eps) * A = (1+eps) * A, which is constant in r. The gradient of L_CLIP with respect to r (and hence theta) is zero — no further update in that direction.", correct: true, explain: "Once r crosses 1+eps, the clipped term equals (1+eps)*A regardless of r. The unclipped term r*A is larger (since r > 1+eps and A > 0), so min selects the smaller clipped constant. Differentiate: d/dr [(1+eps)*A] = 0. The policy receives no gradient for moving further in that direction." },
+      { text: "The min picks the unclipped term r * A because it is larger, which provides a stronger gradient signal toward better actions.", correct: false, explain: "Min picks the smaller value. When A > 0 and r > 1+eps: r*A > (1+eps)*A, so min selects (1+eps)*A. The whole point of the clipped objective is to select the more conservative (smaller) term to prevent overstepping." },
+      { text: "The two terms are equal at r = 1+eps, so the gradient is well-defined and equal from either term at the boundary.", correct: false, explain: "At r = 1+eps exactly, the two terms are equal. But for r > 1+eps the clipped term is selected and its gradient is zero. The question specifies 'just barely exceeds', which is the clipped regime." },
+    ],
+  }}
+  revealExpr="\nabla_\theta L^{\text{CLIP}} = 0 \text{ when } r > 1+\varepsilon \text{ and } A > 0 \;\Rightarrow\; \text{trust-region effect without constraint}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "If A < 0 and r just barely drops below 1 - eps, which term does the min pick?",
+    options: [
+      { text: "The min picks the clipped term (1-eps)*A because when A < 0, (1-eps)*A is more negative (smaller) than r*A (which is less negative since r < 1-eps implies r*A is more negative... wait — let me reconsider). Actually: r < 1-eps and A < 0 means r*A > (1-eps)*A (both negative, but r is smaller so r*A is less negative). So min picks (1-eps)*A, which is constant in r.", correct: true, explain: "With A < 0 and r = 0.7 (eps=0.2, lower bound=0.8): unclipped = 0.7*A; clipped = 0.8*A. Since A < 0, 0.8*A < 0.7*A (0.8*A is more negative). So min(0.7*A, 0.8*A) = 0.8*A — the clipped term. Gradient is zero. The clip prevents the policy from being rewarded for making bad actions even less likely beyond the trust region." },
+      { text: "The min picks the unclipped term r * A because when A < 0, r * A has a larger magnitude and represents a stronger discouragement.", correct: false, explain: "With A < 0 and r < 1-eps: r*A is less negative than clip(r,...)*A = (1-eps)*A. Min picks the more negative value, which is (1-eps)*A — the clipped constant term." },
+      { text: "When A < 0, the clip has no effect because negative advantages always produce a gradient that reduces the ratio, which is already within bounds.", correct: false, explain: "The clip is symmetric. When r drops below 1-eps and A < 0, the policy has reduced a bad action's probability more than the trust region allows. The clipped term (1-eps)*A becomes active, zeroing the gradient for further reduction." },
+    ],
+  }}
+  revealExpr="\min(r\hat{A},\, (1{-}\varepsilon)\hat{A}) = (1{-}\varepsilon)\hat{A} \text{ when } r < 1-\varepsilon,\; A < 0 \;\Rightarrow\; \text{gradient zero}"
+/>
+
+<SrsCard id="ppo-math-clip" paper="ppo" prompt="Write out L_CLIP and explain why it is a lower bound on L_CPI for positive advantages." answer="L_CLIP = E[min(r*A, clip(r, 1-eps, 1+eps)*A)]. When A > 0 and r > 1+eps, the clipped term (1+eps)*A < r*A, so min selects the smaller value. L_CLIP is always <= L_CPI for positive advantages — it is the pessimistic (conservative) version of the surrogate, which prevents overstepping." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the probability ratio r_t in PPO, and what does r_t = 1 mean?", options: [
+    { text: "r_t = pi_new(a_t|s_t) / pi_old(a_t|s_t). r_t = 1 means the new and old policies assign exactly the same probability to action a_t in state s_t — the policy has not changed for that (s, a) pair.", correct: true, explain: "r_t measures how much the new policy has shifted for this specific action. r_t > 1 means the policy is now more likely to take a_t; r_t < 1 means it is less likely. r_t = 1 is the identity — parameters changed but this action's probability is unchanged." },
+    { text: "r_t = reward at step t divided by average reward. r_t = 1 means the reward equals the baseline.", correct: false, explain: "r_t is a probability ratio, not a reward ratio. The advantage A_hat_t captures reward relative to a baseline; r_t captures the policy's change in action probability." },
+    { text: "r_t = gradient norm of the new policy divided by the gradient norm of the old policy. r_t = 1 means gradients are the same magnitude.", correct: false, explain: "r_t is defined as a ratio of action probabilities, not gradient norms. It has nothing to do with gradient magnitudes." },
+  ]},
+  { prompt: "PPO typically performs multiple epochs of minibatch updates on each collected rollout. Why is this safe — isn't it exactly the kind of repeated reuse of old data that causes policy gradient to diverge?", options: [
+    { text: "The clip prevents r from straying too far from 1 within each update step. Even after many Adam iterations on the same batch, the policy cannot move more than roughly eps away from pi_old before the gradient is zeroed, bounding the total drift.", correct: true, explain: "Each gradient step is constrained by the clip. As r approaches 1+eps from below, the clipped term becomes active and the effective gradient diminishes. Multiple epochs on the same batch therefore result in bounded drift — empirically r stays close to 1 across all minibatches. This is why PPO can safely do K=3–10 epochs per rollout." },
+    { text: "Multiple epochs are safe only for the value function head; the policy head is updated only once per rollout in the original PPO paper.", correct: false, explain: "Both the policy and value heads are updated over multiple epochs in PPO. The clip applies to the policy objective; an additional clipping or L2 penalty is sometimes applied to the value loss for analogous reasons." },
+    { text: "PPO resets the policy to pi_old after each epoch so that r is always 1 at the start of each minibatch pass, making stale-data concerns irrelevant.", correct: false, explain: "PPO does not reset between epochs. pi_old is fixed for the entire rollout batch (it is the policy used for data collection). Multiple epochs update the current policy theta while keeping pi_old fixed as the importance-sampling reference." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of one PPO update iteration in the correct order:
+
+<LineReorder client:load lines={[
+  "Collect T timestep rollout with current policy pi_old; store (s_t, a_t, r_t, s_{t+1})",
+  "Compute advantages A_hat_t using GAE (Generalized Advantage Estimation) from rewards and value estimates",
+  "Compute probability ratios: ratio = pi_theta(a_t|s_t) / pi_old(a_t|s_t)",
+  "Form L_CLIP = mean(min(ratio * A_hat, clip(ratio, 1-eps, 1+eps) * A_hat))",
+  "Update theta via Adam on -L_CLIP (+ value loss + entropy bonus) for K epochs over minibatches",
+]} />
+
+Fill in the blank — the clipped term inside the min:
+
+```text
+def ppo_loss(ratio, A_hat, eps=0.2):
+    unclipped = ratio * A_hat
+    clipped   = _______
+    return -torch.mean(torch.min(unclipped, clipped))
+```
+
+<FillBlank answer="torch.clamp(ratio, 1 - eps, 1 + eps) * A_hat" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the PPO training loop, pi_old is fixed for the entire rollout batch. What is pi_old, and when is it updated?", options: [
+    { text: "pi_old is the policy snapshot taken just before collecting each new rollout batch. After K epochs of minibatch updates, pi_old is replaced by the current theta, and a new rollout is collected.", correct: true, explain: "pi_old serves as the importance-sampling denominator. It is frozen during the K epochs so that ratios r_t = pi_theta/pi_old remain meaningful. Once the batch is exhausted, theta becomes the new pi_old for the next rollout collection. This on-policy cadence means data cannot be reused across rollout batches." },
+    { text: "pi_old is the policy from the very beginning of training and is never updated; it acts as a fixed reference distribution throughout all episodes.", correct: false, explain: "If pi_old were fixed to the initial policy, the ratio r_t could grow unboundedly as training progresses, and the clipping would fail to bound updates. pi_old must be updated each rollout to keep ratios near 1." },
+    { text: "pi_old is a separate smaller network that is trained to approximate the current policy using supervised learning after each episode.", correct: false, explain: "pi_old is simply a copy (snapshot) of the current policy network weights taken before each rollout collection. It requires no additional training — it is just frozen weights used as the denominator in the probability ratio." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the clipped PPO surrogate objective in NumPy. Given arrays `ratios` (shape N) and `advantages` (shape N), and scalar `eps = 0.2`, return the scalar mean clipped objective (not negated — return the positive quantity to maximize).
+
+<HintFade client:load
+  hints={[
+    "The unclipped term is simply ratios * advantages. The clipped term clips each ratio to [1-eps, 1+eps] and multiplies by advantages: np.clip(ratios, 1-eps, 1+eps) * advantages.",
+    "The PPO objective takes the element-wise minimum of the two terms: np.minimum(unclipped, clipped). This is the pessimistic lower bound — use np.minimum (element-wise), not np.min (global).",
+    "Return the mean: np.mean(np.minimum(ratios * advantages, np.clip(ratios, 1-eps, 1+eps) * advantages)).",
+  ]}
+  solutionCode={`import numpy as np
+
+def ppo_clip_objective(ratios, advantages, eps=0.2):
+    """
+    ratios:     (N,) probability ratios pi_new / pi_old
+    advantages: (N,) estimated advantages A_hat_t
+    eps:        clip parameter (default 0.2)
+    returns:    scalar mean clipped objective (to be maximized)
+    """
+    unclipped = ratios * advantages
+    clipped   = np.clip(ratios, 1 - eps, 1 + eps) * advantages
+    return np.mean(np.minimum(unclipped, clipped))`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def ppo_clip_objective(ratios, advantages, eps=0.2):
+    """
+    ratios:     (N,) probability ratios pi_new / pi_old
+    advantages: (N,) estimated advantages A_hat_t
+    eps:        clip parameter (default 0.2)
+    returns:    scalar mean clipped objective (to be maximized)
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity check
+ratios = np.array([0.9, 1.0, 1.1, 1.3, 0.7])
+advantages = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+result = ppo_clip_objective(ratios, advantages)
+if result is not None:
+    print("L_CLIP:", round(result, 4))
+    # r=1.3 with A=1.0 should be clipped to 1.2*1.0=1.2, not 1.3
+    # r=0.7 with A=1.0 should be clipped to 0.8*1.0=0.8, not 0.7
+    print("Expected ~", round((0.9 + 1.0 + 1.1 + 1.2 + 0.8) / 5, 4))
+else:
+    print("Not yet implemented — return a scalar")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def ppo_clip_objective(ratios, advantages, eps=0.2):
+    unclipped = ratios * advantages
+    clipped   = np.clip(ratios, 1 - eps, 1 + eps) * advantages
+    return np.mean(np.minimum(unclipped, clipped))
+`}
+  testCode={`import numpy as np
+
+def ppo_clip_objective(ratios, advantages, eps=0.2):
+    unclipped = ratios * advantages
+    clipped   = np.clip(ratios, 1 - eps, 1 + eps) * advantages
+    return np.mean(np.minimum(unclipped, clipped))
+
+eps = 0.2
+
+# Test 1: clipping at upper boundary with positive advantages
+ratios = np.array([1.3, 1.5, 2.0])
+advantages = np.array([1.0, 1.0, 1.0])
+result = ppo_clip_objective(ratios, advantages, eps)
+expected = np.mean([1.2, 1.2, 1.2])  # all clipped to 1+eps
+assert np.isclose(result, expected, atol=1e-6), f"Upper clip failed: got {result}, expected {expected}"
+
+# Test 2: clipping at lower boundary with positive advantages
+ratios2 = np.array([0.5, 0.7, 0.79])
+advantages2 = np.array([1.0, 1.0, 1.0])
+result2 = ppo_clip_objective(ratios2, advantages2, eps)
+expected2 = np.mean([0.5, 0.7, 0.79])  # unclipped wins (smaller for A>0)
+assert np.isclose(result2, expected2, atol=1e-6), f"Lower clip (A>0) failed: got {result2}, expected {expected2}"
+
+# Test 3: L_CLIP is a lower bound on L_CPI for positive advantages
+ratios3 = np.array([0.9, 1.0, 1.1, 1.3, 1.5])
+advantages3 = np.array([1.0, 2.0, 0.5, 1.0, 2.0])
+lcpi = np.mean(ratios3 * advantages3)
+lclip = ppo_clip_objective(ratios3, advantages3, eps)
+assert lclip <= lcpi + 1e-9, f"L_CLIP should be <= L_CPI for positive advantages: lclip={lclip}, lcpi={lcpi}"
+
+# Test 4: within clip range, L_CLIP == L_CPI
+ratios4 = np.array([0.9, 1.0, 1.1])
+advantages4 = np.array([1.0, -1.0, 2.0])
+result4 = ppo_clip_objective(ratios4, advantages4, eps)
+expected4 = np.mean(ratios4 * advantages4)
+assert np.isclose(result4, expected4, atol=1e-6), f"Within-range mismatch: got {result4}, expected {expected4}"
+
+# Test 5: scalar output
+assert np.isscalar(result4) or result4.ndim == 0, "Output must be a scalar"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does the PPO code use np.minimum (element-wise) rather than np.min (global) when forming the clipped objective?", options: [
+    { text: "np.minimum applies the min independently to each (ratio, advantage) pair, preserving the per-timestep lower bound. np.min would return a single scalar minimum across all timesteps, collapsing all information into one element.", correct: true, explain: "The PPO clip is a per-timestep operation: for each t, take min(r_t*A_t, clip(r_t)*A_t). The mean is taken afterward across all t. If we used np.min first, we would throw away all but the most pessimistic timestep — an entirely different (incorrect) objective." },
+    { text: "np.minimum is faster than np.min because it avoids the global reduction step, making it preferable for large-batch RL training.", correct: false, explain: "Performance is not the reason. The conceptual difference is element-wise vs. global. The PPO objective requires per-element comparison, not a global minimum." },
+    { text: "np.min cannot handle negative advantages, so np.minimum is used as a numerically stable alternative.", correct: false, explain: "np.min handles negative values without issue. The reason to use np.minimum is semantic: PPO requires a per-element minimum to form the lower-bound surrogate, not a global minimum." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1707.06347.pdf" title="Proximal Policy Optimization Algorithms (Schulman et al. 2017)" />
+
+Suggested reading order: §3 (Clipped Surrogate Objective — the core algorithm, two pages) → §5 (Experiments — Mujoco and Atari comparisons against TRPO, A2C, and ACER) → §6 (Conclusion).
+
+</StageSection>

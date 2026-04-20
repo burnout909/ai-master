@@ -47,7 +47,7 @@ export const PAPERS_META: PaperMeta[] = [
 
   // ——— Alignment ———
   { slug: "instructgpt", title: "Training Language Models to Follow Instructions", authors: "Ouyang et al.", year: 2022, era: "alignment", arxivId: "2203.02155", summary: "RLHF pipeline behind ChatGPT.", status: "stub", influencedBy: ["gpt3"] },
-  { slug: "ppo",         title: "Proximal Policy Optimization", authors: "Schulman et al.", year: 2017, era: "alignment", arxivId: "1707.06347", summary: "Clipped-ratio policy gradient; backbone of RLHF.", status: "stub" },
+  { slug: "ppo",         title: "Proximal Policy Optimization", authors: "Schulman et al.", year: 2017, era: "alignment", arxivId: "1707.06347", summary: "Clipped-ratio policy gradient; backbone of RLHF.", status: "implemented" },
   { slug: "dpo",         title: "Direct Preference Optimization", authors: "Rafailov et al.", year: 2023, era: "alignment", arxivId: "2305.18290", summary: "Preference learning without a reward model.", status: "stub", influencedBy: ["instructgpt"] },
   { slug: "constitutional", title: "Constitutional AI: Harmlessness from AI Feedback", authors: "Bai et al.", year: 2022, era: "alignment", arxivId: "2212.08073", summary: "Self-critique against a written constitution.", status: "stub", influencedBy: ["instructgpt"] },
 
