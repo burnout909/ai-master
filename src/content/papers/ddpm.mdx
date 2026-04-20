@@ -1,0 +1,244 @@
+---
+slug: ddpm
+title: "Denoising Diffusion Probabilistic Models"
+authors: "Ho, Jain, Abbeel"
+year: 2020
+era: generative
+arxivId: "2006.11239"
+estimatedMinutes: 75
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { NoiseSchedule } from "../../components/widgets/NoiseSchedule.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+Diffusion models learn to generate data by learning to **reverse** a gradual noising process. The key insight: if you corrupt an image by adding tiny amounts of Gaussian noise at each of T steps, the result is eventually pure noise. A neural network trained to reverse each small step — to denoise — can then generate novel images by starting from pure noise and denoising T times.
+
+**Setup:** imagine slowly dissolving a photo into static. At step 0 you have the original. At step T (~1000) you have pure Gaussian noise. The model learns to run this film backward.
+
+<PredictThenReveal client:load predictPrompt="Predict: at timestep T (~1000), how much of x_0's information remains in x_T? Type your guess.">
+  **~0** — the forward chain is designed so that ᾱ_T → 0, meaning x_T converges to an isotropic Gaussian 𝒩(0, I) regardless of what x_0 was. All original signal is destroyed; only noise remains.
+</PredictThenReveal>
+
+Now explore the widget below. Drag the timestep slider and switch between schedules to see how quickly signal is destroyed.
+
+<NoiseSchedule client:load />
+
+<PredictThenReveal client:load predictPrompt="Predict: does the linear schedule destroy information faster or slower than the cosine schedule at early timesteps?">
+  The **linear schedule destroys signal faster** in the early steps. The cosine schedule keeps ᾱ_t higher for longer, preserving low-frequency structure through more of the forward process. This means the reverse model has more signal to work with at each step, yielding better sample quality — which is why the cosine schedule was introduced as an improvement.
+</PredictThenReveal>
+
+<SrsCard id="ddpm-forward-end-state" paper="ddpm" prompt="What distribution does x_T converge to in the DDPM forward process, and why?" answer="x_T ~ 𝒩(0, I) because ᾱ_T → 0 — the signal coefficient √ᾱ_T vanishes and the noise coefficient √(1−ᾱ_T) → 1." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the distribution of x_T in the DDPM forward process?", options: [
+    { text: "𝒩(0, I) — isotropic Gaussian", correct: true, explain: "The schedule is designed so ᾱ_T ≈ 0, making x_T pure noise." },
+    { text: "The same as x_0 but blurry", correct: false, explain: "x_T has no structural relation to x_0 — signal is fully lost." },
+    { text: "Uniform distribution over pixel values", correct: false, explain: "The noise added is Gaussian, not uniform." },
+  ]},
+  { prompt: "Why does the cosine schedule produce better samples than the linear schedule?", options: [
+    { text: "It preserves low-frequency signal longer, giving the model more structure to work with", correct: true, explain: "ᾱ_t decays more slowly under cosine, so early reverse steps have meaningful signal." },
+    { text: "It uses fewer total timesteps T", correct: false, explain: "T is typically the same; the schedule shape differs." },
+    { text: "It removes noise faster, so inference is quicker", correct: false, explain: "Schedule choice affects training quality, not inference speed directly." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+**Forward process** — each step adds a small amount of Gaussian noise:
+
+<Math display expr="q(x_t \mid x_{t-1}) = \mathcal{N}\!\left(x_t;\; \sqrt{1-\beta_t}\, x_{t-1},\; \beta_t I\right)" />
+
+**Closed-form marginal** — the key algebraic trick: repeated reparameterization collapses T steps into one:
+
+<Math display expr="x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1-\bar\alpha_t}\, \varepsilon, \quad \varepsilon \sim \mathcal{N}(0, I)" />
+
+where <Math expr="\bar\alpha_t = \prod_{s=1}^{t}(1-\beta_s)" />.
+
+<DerivationStep client:load
+  question={{
+    prompt: "What does q(x_t | x_0) equal after T steps as ᾱ_t → 0?",
+    options: [
+      { text: "𝒩(0, I) — standard Gaussian", correct: true, explain: "When ᾱ_t → 0, the signal term √ᾱ_t·x_0 vanishes and √(1−ᾱ_t) → 1, so x_t ~ 𝒩(0, I)." },
+      { text: "𝒩(x_0, I) — Gaussian centered at x_0", correct: false, explain: "That would be ᾱ_t = 1 (no noise added)." },
+      { text: "𝒩(0, β_t·I) — scaled by current beta", correct: false, explain: "The variance depends on ᾱ_t cumulatively, not a single β_t." },
+    ],
+  }}
+  revealExpr="q(x_t \mid x_0) = \mathcal{N}\!\left(x_t;\; \sqrt{\bar\alpha_t}\,x_0,\; (1-\bar\alpha_t)I\right) \xrightarrow{\bar\alpha_t\to 0} \mathcal{N}(0, I)"
+/>
+
+**What should the network predict?** Rather than predicting x_0 directly, Ho et al. found predicting the noise ε gives better results. The loss simplifies to:
+
+<Math display expr="L_\text{simple} = \mathbb{E}_{t, x_0, \varepsilon}\!\left[\bigl\|\varepsilon - \varepsilon_\theta(x_t, t)\bigr\|^2\right]" />
+
+<DerivationStep client:load
+  question={{
+    prompt: "Which target is easier for the neural network: predicting x_0 or predicting ε given x_t?",
+    options: [
+      { text: "ε (the noise) — scale-invariant, leads to simpler L2 denoising loss", correct: true, explain: "ε is always drawn from 𝒩(0,I) regardless of x_0 scale. Predicting x_0 requires learning scale; predicting ε gives a fixed-scale regression target." },
+      { text: "x_0 — it is the actual data we care about", correct: false, explain: "x_0 prediction works but has higher variance at large t where most signal is gone." },
+      { text: "Both are equally hard — they are related by a fixed linear transform", correct: false, explain: "While they are linearly related, the noise target has more desirable statistical properties for training." },
+    ],
+  }}
+  revealExpr="\hat\varepsilon = \varepsilon_\theta(x_t, t), \quad L_\text{simple} = \mathbb{E}\!\left[\|\varepsilon - \hat\varepsilon\|^2\right]"
+/>
+
+<SrsCard id="ddpm-epsilon-prediction" paper="ddpm" prompt="Why does DDPM predict ε (noise) rather than x_0?" answer="ε ~ 𝒩(0,I) is scale-invariant regardless of x_0, making it a fixed-scale regression target. This yields L_simple = E[‖ε − ε_θ(x_t,t)‖²], which trains more stably than direct x_0 prediction." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the closed-form q(x_t|x_0), what is ᾱ_t?", options: [
+    { text: "Cumulative product of (1 − β_s) for s=1..t", correct: true, explain: "ᾱ_t = ∏(1−β_s) — the product of all signal-retention factors up to t." },
+    { text: "The sum of all betas up to t", correct: false, explain: "That would be a cumulative sum; ᾱ_t is a cumulative product." },
+    { text: "A single beta at step t", correct: false, explain: "β_t is just one step; ᾱ_t accumulates all steps." },
+  ]},
+  { prompt: "L_simple in DDPM is a loss on:", options: [
+    { text: "The predicted noise ε_θ vs the true noise ε", correct: true, explain: "L_simple = E[‖ε − ε_θ(x_t,t)‖²] — pure noise regression." },
+    { text: "The predicted x_0 vs the true x_0", correct: false, explain: "That is a valid alternative but not L_simple as defined by Ho et al." },
+    { text: "The KL divergence between q and p_θ", correct: false, explain: "The full ELBO involves KL, but L_simple is the simplified noise-prediction surrogate." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the steps of the DDPM training loop in correct order:
+
+<LineReorder client:load lines={[
+  "Sample t ~ Uniform(1, T)",
+  "Sample ε ~ 𝒩(0, I)",
+  "Compute x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε",
+  "Predict ε_θ(x_t, t)",
+  "Compute L = ‖ε − ε_θ‖²",
+  "Backprop and update θ",
+]} />
+
+Complete the pseudocode — what variable does the network predict?
+
+```text
+def train_step(x0, model, betas):
+    t = sample_uniform(1, T)
+    eps = sample_normal(shape=x0.shape)
+    x_t = sqrt(alpha_bar[t]) * x0 + sqrt(1 - alpha_bar[t]) * eps
+    eps_pred = model(x_t, t)
+    loss = mean((eps - eps_pred) ** 2)   # predicting: ___
+    loss.backward()
+```
+
+The blank is: <FillBlank answer="epsilon" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the DDPM training loop, which comes first: sampling t or computing x_t?", options: [
+    { text: "Sample t first, then compute x_t using the closed form", correct: true, explain: "t determines which ᾱ_t to use in the closed-form noising equation." },
+    { text: "Compute x_t by running the full Markov chain, then record t", correct: false, explain: "The closed form avoids running the full chain — that is the whole point of ᾱ_t." },
+    { text: "The order does not matter; they are independent", correct: false, explain: "t must be sampled before x_t can be computed since ᾱ_t depends on t." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the DDPM forward process in NumPy: compute alpha bars and sample x_t using the closed form.
+
+<HintFade client:load
+  hints={[
+    "Use the closed form, not a loop over t-steps — the closed form collapses the entire chain into a single equation.",
+    "You need ᾱ_t; compute it once up front for all t using np.cumprod(1 - betas).",
+    "x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε — index alpha_bars at position t to get the right coefficient.",
+  ]}
+  solutionCode={`import numpy as np
+
+def alpha_bars(betas):
+    return np.cumprod(1 - betas)
+
+def q_sample(x0, t, betas, eps):
+    ab = alpha_bars(betas)
+    return np.sqrt(ab[t]) * x0 + np.sqrt(1 - ab[t]) * eps`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def alpha_bars(betas):
+    # TODO: return cumulative product of (1 - betas)
+    pass
+
+def q_sample(x0, t, betas, eps):
+    # TODO: implement closed-form forward sample at timestep t
+    # x_t = sqrt(alpha_bar[t]) * x0 + sqrt(1 - alpha_bar[t]) * eps
+    pass
+
+# Quick sanity check
+T = 100
+betas = np.linspace(1e-4, 0.02, T)
+ab = alpha_bars(betas)
+print("alpha_bars shape:", None if ab is None else ab.shape)
+print("alpha_bars[0]:", None if ab is None else ab[0])
+print("alpha_bars[-1]:", None if ab is None else ab[-1])
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def alpha_bars(betas):
+    return np.cumprod(1 - betas)
+
+def q_sample(x0, t, betas, eps):
+    ab = alpha_bars(betas)
+    return np.sqrt(ab[t]) * x0 + np.sqrt(1 - ab[t]) * eps
+`}
+  testCode={`import numpy as np
+np.random.seed(0)
+T = 100
+betas = np.linspace(1e-4, 0.02, T)
+ab = alpha_bars(betas)
+assert np.all(ab[1:] <= ab[:-1]), "alpha_bars must be non-increasing"
+
+x0 = np.zeros(64); eps = np.random.randn(64)
+sample = q_sample(x0, T-1, betas, eps)
+assert abs(sample.std() - 1.0) < 0.2, f"std at t=T-1 should be ~1, got {sample.std()}"
+
+x0 = np.random.randn(16); eps = np.random.randn(16)
+sample0 = q_sample(x0, 0, betas, eps)
+# at t=0, ab[0] = 1-betas[0] is very close to 1, so sample ≈ x0 + tiny*eps
+assert np.allclose(sample0, x0, atol=0.05), "at t=0 should be ~x0"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why use np.cumprod(1 - betas) to compute alpha bars?", options: [
+    { text: "ᾱ_t = ∏(1−β_s) for s up to t — a running product, which cumprod computes in one call", correct: true, explain: "cumprod returns [1−β_0, (1−β_0)(1−β_1), …], exactly the ᾱ values." },
+    { text: "np.cumprod gives the sum, which equals ᾱ_t by definition", correct: false, explain: "cumprod gives cumulative products, not sums. ᾱ_t is a product." },
+    { text: "It normalizes the betas so they sum to 1", correct: false, explain: "cumprod does not normalize; it multiplies sequentially." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2006.11239.pdf" title="DDPM" />
+
+Suggested reading order: §2 Background → §3 Diffusion models → §3.2 Reverse process → §4 Experiments.
+
+</StageSection>
