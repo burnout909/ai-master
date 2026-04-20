@@ -1,0 +1,231 @@
+---
+slug: gan
+title: "Generative Adversarial Nets"
+authors: "Goodfellow et al."
+year: 2014
+era: foundations
+arxivId: "1406.2661"
+estimatedMinutes: 50
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { GanDynamics } from "../../components/widgets/GanDynamics.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before GANs, deep generative models were hard to train well. Variational autoencoders required explicit likelihood formulations and blurry samples; energy-based models were unwieldy. In 2014, Goodfellow et al. proposed a radically different idea: pit two networks against each other in a **minimax game**.
+
+The **Generator** G takes random noise z from a prior p_z (e.g. Gaussian) and tries to produce samples indistinguishable from real data. The **Discriminator** D looks at a sample and tries to tell real from fake. Each network is trained to defeat the other. At equilibrium, G produces samples so realistic that D can do no better than random guessing — outputting 0.5 for both real and fake inputs.
+
+<PredictThenReveal client:load predictPrompt="Before playing with the widget: if the generator improves but the discriminator stays fixed, what do you expect happens to D(fake)?">
+  As the generator improves, the fake samples look more realistic, so a fixed discriminator starts mistaking them for real ones — D(fake) rises toward 0.5. The discriminator must keep re-training to stay ahead, creating the adversarial dynamic.
+</PredictThenReveal>
+
+Drag the training-step slider to watch D(real) and D(fake) oscillate during training. Check "Converged equilibrium" to snap both to 0.5 — the Nash equilibrium state.
+
+<GanDynamics client:load />
+
+<PredictThenReveal client:load predictPrompt="At convergence both D(real) ≈ 0.5 and D(fake) ≈ 0.5. What does this say about the generator's distribution relative to the real data distribution?">
+  When D outputs 0.5 everywhere, it cannot distinguish the two distributions — meaning the generator's distribution p_g has converged to the real data distribution p_data. The generator has perfectly learned to mimic real data, and the optimal discriminator is a coin flip everywhere.
+</PredictThenReveal>
+
+<SrsCard id="gan-equilibrium" paper="gan" prompt="What is the Nash equilibrium of the GAN game?" answer="At equilibrium, the generator distribution p_g equals the real data distribution p_data, and the discriminator outputs D(x) = 0.5 everywhere — it cannot distinguish real from fake any better than chance." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What does the generator G receive as input?", options: [
+    { text: "Random noise z sampled from a prior distribution p_z (e.g. Gaussian)", correct: true, explain: "G maps latent noise z to sample space, learning to produce realistic-looking outputs." },
+    { text: "A real data sample x from the dataset", correct: false, explain: "G never sees real data directly — it only receives noise z and learns from the discriminator's feedback." },
+    { text: "The discriminator's gradient signal directly", correct: false, explain: "G receives gradients through backprop from D, but its input during forward pass is noise z." },
+  ]},
+  { prompt: "Why is the GAN training described as a minimax game?", options: [
+    { text: "G minimizes the objective while D maximizes it — they have opposing goals over the same value function", correct: true, explain: "D wants to maximize its ability to distinguish real from fake; G wants to minimize D's advantage. Same V(G,D), opposite objectives." },
+    { text: "G and D are trained jointly to minimize a shared reconstruction loss", correct: false, explain: "There is no shared reconstruction loss — the losses are adversarial, not collaborative." },
+    { text: "The loss bounces between a min and max value at each step", correct: false, explain: "Minimax refers to the game-theoretic structure, not the numerical behavior of the loss." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The GAN objective is a minimax value function over the discriminator D and generator G:
+
+<Math display expr="V(G,D) = \mathbb{E}_{x \sim p_\text{data}}[\log D(x)] \;+\; \mathbb{E}_{z \sim p_z}[\log(1 - D(G(z)))]" />
+
+D wants to **maximize** V (correctly label real as real, fake as fake). G wants to **minimize** V (fool D into labeling fakes as real). Written compactly:
+
+<Math display expr="\min_G \max_D \; V(G,D)" />
+
+The first term rewards D for outputting high probabilities on real data. The second term rewards D for outputting low probabilities on generated data (and punishes G for failing to fool D).
+
+<DerivationStep client:load
+  question={{
+    prompt: "Given a fixed G, what is the optimal discriminator D*(x) that maximises V(G,D) for each x independently?",
+    options: [
+      { text: "D*(x) = p_data(x) / (p_data(x) + p_g(x))", correct: true, explain: "Taking the functional derivative of V w.r.t. D(x) and setting to zero gives this closed-form optimal discriminator — the ratio of real density to total density." },
+      { text: "D*(x) = p_data(x)", correct: false, explain: "The optimal D is a ratio, not a raw density. Without the denominator it could exceed 1." },
+      { text: "D*(x) = 0.5 for all x", correct: false, explain: "D* = 0.5 only when p_g = p_data, i.e. at the global minimum — not the optimal D for an arbitrary G." },
+    ],
+  }}
+  revealExpr="D^*(x) = \frac{p_\text{data}(x)}{p_\text{data}(x) + p_g(x)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Substituting D*(x) back into V(G, D*), what quantity does minimizing over G equal minimizing?",
+    options: [
+      { text: "The Jensen-Shannon divergence JSD(p_data || p_g), which equals zero only when p_g = p_data", correct: true, explain: "After substitution, V(G,D*) = -log 4 + 2·JSD(p_data||p_g). Minimizing over G pushes p_g toward p_data, achieving JSD = 0 at equilibrium." },
+      { text: "The KL divergence KL(p_data || p_g)", correct: false, explain: "The vanilla GAN optimizes JSD (a symmetric divergence), not the asymmetric KL. This symmetry is why GAN was considered an improvement over earlier likelihood-based methods." },
+      { text: "The L2 distance between mean embeddings of real and fake samples", correct: false, explain: "L2 in feature space is the MMD objective (used in other generative models). GAN optimizes a divergence derived from the discriminator's log-likelihood." },
+    ],
+  }}
+  revealExpr="\min_G V(G,D^*) = -\log 4 + 2\,\mathrm{JSD}(p_\text{data} \,\|\, p_g)"
+/>
+
+<SrsCard id="gan-jsd" paper="gan" prompt="What divergence does the GAN objective minimize at the optimal discriminator?" answer="Substituting the optimal D* = p_data/(p_data+p_g) into V gives V(G,D*) = -log4 + 2·JSD(p_data||p_g). Minimizing over G equals minimizing the Jensen-Shannon divergence, which reaches 0 only when p_g = p_data." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the GAN value function, what does the term E_{z~p_z}[log(1 - D(G(z)))] represent for G?", options: [
+    { text: "G's penalty: it is large (close to 0) when D correctly identifies fakes, so G must minimize it", correct: true, explain: "When D(G(z)) ≈ 0 (D correctly rejects fakes), log(1-0) = 0. When D(G(z)) ≈ 1 (G fools D), log(1-1) → -∞. G wants to drive this term toward -∞, i.e. fool D." },
+    { text: "G's reward: G receives credit when D correctly classifies fakes", correct: false, explain: "G and D have opposing objectives. G wants to fool D, not help it." },
+    { text: "A regularization term that prevents G from mode collapse", correct: false, explain: "The original GAN has no explicit anti-collapse regularizer in this term — mode collapse is a known failure mode." },
+  ]},
+  { prompt: "Why does the optimal D* have value 0.5 when p_g = p_data?", options: [
+    { text: "When p_g = p_data, the denominator p_data + p_g = 2·p_data, so D* = p_data / (2·p_data) = 0.5", correct: true, explain: "With identical distributions, every data point is equally likely to be real or fake, so the best the discriminator can do is guess randomly." },
+    { text: "0.5 is a hyperparameter chosen to stabilize training", correct: false, explain: "D* = 0.5 is derived analytically from the objective, not a chosen value." },
+    { text: "The discriminator saturates at 0.5 due to sigmoid activation limits", correct: false, explain: "0.5 is the theoretically optimal output under equal distributions, not a saturation artifact." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the GAN alternating training loop steps in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample minibatch of m real examples x^(1)...x^(m) from p_data",
+  "Sample minibatch of m noise vectors z^(1)...z^(m) from p_z",
+  "Update D by ascending its stochastic gradient: ∇_θd [Σ log D(x^(i)) + log(1 - D(G(z^(i))))]",
+  "Sample new minibatch of m noise vectors z^(1)...z^(m) from p_z",
+  "Update G by descending its stochastic gradient: ∇_θg [Σ log(1 - D(G(z^(i))))]",
+]} />
+
+Fill the blank in the discriminator update rule:
+
+```text
+# Discriminator loss (to maximise)
+d_loss = mean(log(D(x_real)) + log(1 - D(______)))
+```
+
+<FillBlank answer="G(z)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the alternating training loop, why is G updated with a fresh batch of noise rather than reusing the batch used for the D update?", options: [
+    { text: "To ensure the G gradient is independent of the specific noise samples that shaped the D update, giving a less biased gradient estimate", correct: true, explain: "Reusing would introduce a subtle correlation: the same z that informed the D update now drives the G update. Fresh samples decorrelate the two gradient steps." },
+    { text: "Because the same z vector cannot be passed through both G and D in the same forward pass", correct: false, explain: "Technically it can, but drawing fresh samples is the practice described in the original paper for cleaner gradient estimates." },
+    { text: "To prevent mode collapse by exposing G to more diverse latent codes per iteration", correct: false, explain: "While diversity helps, the reason given in the paper is statistical independence of gradient estimates, not primarily anti-collapse." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the discriminator loss for one training step in NumPy. Given arrays `real_probs` (D's outputs on real data) and `fake_probs` (D's outputs on G's samples), compute the **negative** minimax objective that D minimises (i.e. the binary cross-entropy loss):
+
+```
+loss = -mean(log(D(real)) + log(1 - D(fake)))
+```
+
+<HintFade client:load
+  hints={[
+    "Use np.log on each array. The loss has two terms: one for real samples and one for fake samples.",
+    "For real samples: log(real_probs). For fake samples: log(1 - fake_probs). Sum them element-wise, take the mean, then negate.",
+    "Final expression: -np.mean(np.log(real_probs) + np.log(1 - fake_probs)). Add a small epsilon (1e-8) inside log to avoid log(0).",
+  ]}
+  solutionCode={`import numpy as np
+
+def discriminator_loss(real_probs, fake_probs):
+    eps = 1e-8
+    return -np.mean(np.log(real_probs + eps) + np.log(1 - fake_probs + eps))`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def discriminator_loss(real_probs, fake_probs):
+    # TODO: implement
+    # loss = -mean(log(D(real)) + log(1 - D(fake)))
+    pass
+
+# Quick sanity check
+real = np.array([0.9, 0.8, 0.95])
+fake = np.array([0.1, 0.2, 0.05])
+print("loss (should be low, D is good):", discriminator_loss(real, fake))
+
+real2 = np.array([0.5, 0.5, 0.5])
+fake2 = np.array([0.5, 0.5, 0.5])
+print("loss at equilibrium (D=0.5 everywhere):", discriminator_loss(real2, fake2))
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`
+import numpy as np
+
+def discriminator_loss(real_probs, fake_probs):
+    eps = 1e-8
+    return -np.mean(np.log(real_probs + eps) + np.log(1 - fake_probs + eps))
+`}
+  testCode={`
+import numpy as np
+
+# Test 1: perfect discriminator should give very low loss
+real = np.array([0.99, 0.99, 0.99])
+fake = np.array([0.01, 0.01, 0.01])
+loss_good = discriminator_loss(real, fake)
+assert loss_good < 0.1, f"Expected low loss for perfect D, got {loss_good:.4f}"
+
+# Test 2: random discriminator (equilibrium D=0.5) gives loss ≈ log(2) ≈ 0.693
+real2 = np.array([0.5, 0.5, 0.5])
+fake2 = np.array([0.5, 0.5, 0.5])
+loss_eq = discriminator_loss(real2, fake2)
+assert abs(loss_eq - np.log(2)) < 0.05, f"Expected ~{np.log(2):.3f} at equilibrium, got {loss_eq:.4f}"
+
+# Test 3: output is a scalar
+assert np.ndim(loss_eq) == 0, "Loss should be a scalar"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why do we add a small epsilon (1e-8) inside the log in the discriminator loss?", options: [
+    { text: "To avoid log(0) = -∞ when D outputs exactly 0 or 1, which would cause numerical overflow", correct: true, explain: "In practice D's output can saturate to 0 or 1. Adding eps keeps the argument positive and finite." },
+    { text: "To regularize the discriminator and prevent it from becoming overconfident", correct: false, explain: "Epsilon is a numerical stability trick, not a regularizer. For regularization you would use weight decay or spectral norm." },
+    { text: "To shift the loss so it is always positive", correct: false, explain: "The loss can still be positive without epsilon (log of values < 1 is negative, negated to positive). Epsilon is purely for numerical safety." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1406.2661.pdf" title="Generative Adversarial Nets" />
+
+Suggested reading order: §3 (Adversarial Nets — the minimax formulation) → §4.1 (Global optimality of p_g = p_data — the D* derivation and JSD proof) → §4.2 (Convergence of the algorithm — the alternating training convergence argument).
+
+</StageSection>
