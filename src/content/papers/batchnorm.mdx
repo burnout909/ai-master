@@ -1,0 +1,220 @@
+---
+slug: batchnorm
+title: "Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift"
+authors: "Ioffe, Szegedy"
+year: 2015
+era: foundations
+arxivId: "1502.03167"
+estimatedMinutes: 45
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { BatchNormDist } from "../../components/widgets/BatchNormDist.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Training a deep network is hard because the distribution of each layer's pre-activations keeps shifting as the weights below change — the paper calls this **internal covariate shift**. As distributions drift into the tails of saturating non-linearities (tanh, sigmoid), gradients collapse and learning stalls. Pre-2015, people carefully initialized weights and used tiny learning rates.
+
+Batch Normalization attacks the shift directly: at every layer it subtracts the minibatch mean and divides by the minibatch standard deviation, re-centering activations to roughly zero-mean unit-variance. Two learnable scalars per channel, γ and β, let the network re-scale if it needs to.
+
+<PredictThenReveal client:load predictPrompt="Before touching the widget: as you stack more layers (each multiplying by 1.1 and shifting by 0.2), what happens to the pre-activation distribution at layer 10 without any normalization?">
+  It drifts and spreads. Mean walks off (0.2 accumulates across layers); variance blows up (1.1² per layer, ×10 layers ≈ 6.7× variance). Most activations fall in the saturated regions of a downstream non-linearity, so gradients die.
+</PredictThenReveal>
+
+Play with the widget — crank layer depth to 10 with BatchNorm OFF, then toggle BatchNorm ON.
+
+<BatchNormDist client:load />
+
+<PredictThenReveal client:load predictPrompt="Predict: with BatchNorm ON, roughly what mean and variance do you expect at layer 10? Does batch size matter much?">
+  Mean ≈ 0, variance ≈ 1 — BN renormalizes at every layer, so depth doesn't accumulate drift. Batch size matters a little: smaller batches give noisier μ, σ estimates, which is why group/layer norm were later invented for batch=1 inference.
+</PredictThenReveal>
+
+<SrsCard id="batchnorm-core" paper="batchnorm" prompt="What problem does Batch Normalization claim to solve?" answer="Internal covariate shift — pre-activation distributions drifting across layers during training, which pushes them into saturated regions of non-linearities and kills gradients." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does drift cause training to stall?", options: [
+    { text: "Activations saturate in tanh/sigmoid → gradient is ≈ 0", correct: true, explain: "At |x|>3, tanh'(x) < 0.01." },
+    { text: "The loss becomes non-convex", correct: false, explain: "Deep nets are non-convex regardless." },
+    { text: "Backprop requires a specific distribution", correct: false, explain: "Backprop is distribution-agnostic mechanically." },
+  ]},
+  { prompt: "What does BN do to a batch at inference?", options: [
+    { text: "Uses running averages of μ and σ² accumulated during training", correct: true, explain: "At test time the batch may be size 1 — you need frozen statistics." },
+    { text: "Computes μ, σ² over the test batch as usual", correct: false, explain: "That breaks for batch=1 and introduces train/test skew." },
+    { text: "Skips normalization entirely", correct: false, explain: "Then γ, β apply to un-normalized data." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Batch Normalization over a minibatch _B_ of pre-activations _z_:
+
+<Math display expr="\mu_B = \frac{1}{m}\sum_{i=1}^{m} z_i, \quad \sigma_B^2 = \frac{1}{m}\sum_{i=1}^{m} (z_i - \mu_B)^2" />
+
+<Math display expr="\hat{z}_i = \frac{z_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}, \quad \text{BN}(z_i) = \gamma\, \hat{z}_i + \beta" />
+
+γ, β are learned per-feature parameters. ε is a small constant (e.g. 1e-5).
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why add ε inside the square root?",
+    options: [
+      { text: "Numerical stability when σ_B² is near zero", correct: true, explain: "A constant batch gives σ_B² = 0, which would divide by zero." },
+      { text: "To make the output have non-zero variance", correct: false, explain: "Output variance is still controlled by γ, not ε." },
+      { text: "For backward-pass differentiability", correct: false, explain: "√x is differentiable away from 0; ε just shifts you away from 0." },
+    ],
+  }}
+  revealExpr="\hat{z}_i = \frac{z_i - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "If BN always forces mean 0, variance 1 — why do we still need learnable γ and β?",
+    options: [
+      { text: "To recover the identity transform if that is what the network wants", correct: true, explain: "Setting γ = √(σ²+ε), β = μ exactly undoes BN; γ, β keep representational power." },
+      { text: "To stabilize the running averages at test time", correct: false, explain: "That's handled by exponential moving averages of μ, σ²." },
+      { text: "To regularize the network like dropout", correct: false, explain: "BN does regularize slightly, but that's a side effect — γ, β are about representational freedom." },
+    ],
+  }}
+  revealExpr="\text{BN}(z) = \gamma\,\hat{z} + \beta \text{ can recover any affine shape of } z"
+/>
+
+At inference we replace μ_B, σ_B² with running averages <Math expr="\bar{\mu}, \bar{\sigma}^2" /> accumulated during training.
+
+<SrsCard id="batchnorm-inference" paper="batchnorm" prompt="Why does BN behave differently at train vs inference time?" answer="At training it uses current batch statistics (μ_B, σ_B²). At inference it uses running averages accumulated during training, so single-sample inference is deterministic and matches what was learned." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The inverse of the normalization can be recovered by:", options: [
+    { text: "Setting γ = √(σ² + ε), β = μ", correct: true, explain: "This makes BN(z) = z." },
+    { text: "Setting γ = 1, β = 0", correct: false, explain: "That's the identity for the normalized value ẑ, not for z." },
+    { text: "Disabling the affine layer", correct: false, explain: "Without γ, β you're stuck at mean 0 variance 1." },
+  ]},
+  { prompt: "A typical value of ε is:", options: [
+    { text: "≈ 1e-5", correct: true, explain: "Small enough not to shift the normalization, large enough to prevent overflow." },
+    { text: "≈ 1.0", correct: false, explain: "Would dominate σ² and destroy normalization." },
+    { text: "Learnable", correct: false, explain: "ε is a hyperparameter, not learned." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the BN forward pass steps in order:
+
+<LineReorder client:load lines={[
+  "Compute batch mean μ_B",
+  "Compute batch variance σ_B²",
+  "Normalize: ẑ = (z - μ_B) / √(σ_B² + ε)",
+  "Scale and shift: y = γ·ẑ + β",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def batchnorm(z, gamma, beta, eps=1e-5):
+    mean = z.mean(axis=0)
+    var  = z.var(axis=0)
+    zhat = _______    # ← fill
+    return gamma * zhat + beta
+```
+
+<FillBlank answer="(z - mean) / sqrt(var + eps)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Which axis is the mean/variance reduction taken over in standard 2D BN?", options: [
+    { text: "Axis 0 (batch axis)", correct: true, explain: "Each feature is normalized independently across the batch." },
+    { text: "Axis 1 (feature axis)", correct: false, explain: "That would normalize each example independently — closer to LayerNorm." },
+    { text: "All axes", correct: false, explain: "Would collapse everything to a single scalar." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement BatchNorm's forward pass for a 2D tensor of shape (batch, features).
+
+<HintFade client:load
+  hints={[
+    "Reduce mean and variance along axis 0 (the batch axis), keeping the feature axis.",
+    "Use a small epsilon inside the square root for numerical stability.",
+    "γ and β should broadcast correctly — shape (features,) against (batch, features).",
+  ]}
+  solutionCode={`import numpy as np
+
+def batchnorm(z, gamma, beta, eps=1e-5):
+    mean = z.mean(axis=0)
+    var  = z.var(axis=0)
+    zhat = (z - mean) / np.sqrt(var + eps)
+    return gamma * zhat + beta`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def batchnorm(z, gamma, beta, eps=1e-5):
+    # TODO: implement
+    pass
+
+# Quick sanity
+np.random.seed(0)
+z = np.random.randn(16, 4) * 3 + 5       # drifted features
+gamma = np.ones(4); beta = np.zeros(4)
+out = batchnorm(z, gamma, beta)
+print("mean:", None if out is None else out.mean(axis=0))
+print("var :", None if out is None else out.var(axis=0))
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`
+import numpy as np
+def batchnorm(z, gamma, beta, eps=1e-5):
+    mean = z.mean(axis=0); var = z.var(axis=0)
+    zhat = (z - mean) / np.sqrt(var + eps)
+    return gamma * zhat + beta
+`}
+  testCode={`
+import numpy as np
+np.random.seed(0)
+z = np.random.randn(32, 4) * 3 + 5
+gamma = np.ones(4); beta = np.zeros(4)
+out = batchnorm(z, gamma, beta)
+assert out.shape == (32, 4), f"bad shape {out.shape}"
+assert np.allclose(out.mean(axis=0), 0.0, atol=1e-6), "mean should be 0"
+assert np.allclose(out.var(axis=0), 1.0, atol=1e-3), "var should be 1"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "After BN with γ=1, β=0, what is the feature-wise variance?", options: [
+    { text: "Approximately 1", correct: true, explain: "Division by √(var + ε) enforces unit variance." },
+    { text: "Approximately 0", correct: false, explain: "Mean is 0, variance is 1." },
+    { text: "Unchanged from input", correct: false, explain: "BN renormalizes." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1502.03167.pdf" title="Batch Normalization" />
+
+Suggested reading order: §3 (Normalization via Mini-Batch Statistics) → §3.1 (Training and Inference with Batch-Normalized Networks) → §4 (Experiments).
+
+</StageSection>
