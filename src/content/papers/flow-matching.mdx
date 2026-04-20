@@ -1,0 +1,281 @@
+---
+slug: flow-matching
+title: "Flow Matching for Generative Modeling"
+authors: "Lipman, Chen, Ben-Hamu, Nickel, Le"
+year: 2023
+era: generative
+arxivId: "2210.02747"
+estimatedMinutes: 55
+prerequisites: ["ddpm"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { FlowField } from "../../components/widgets/FlowField.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+DDPM generates data by defining a **Markov chain** through a noise schedule: the forward process adds Gaussian noise over T steps (often 1000), and the reverse process denoises step by step. This works beautifully, but it has two costs. First, sampling requires running many sequential denoising steps, which is slow. Second, the denoising path is curved — the network must predict along a complex, high-curvature trajectory from noise to data. These curves mean the model must take many small steps to stay on track.
+
+Flow Matching (Lipman et al., 2022) takes a radically different route. Instead of a discrete Markov chain, it directly parameterizes a **time-dependent vector field** v(x, t) that continuously transports particles from a base distribution (standard Gaussian at t=0) to the data distribution (at t=1). During training, the target vector field is computed from a constructed **conditional path** — specifically, a straight line from a noise sample x_0 to a data sample x_1. Straight paths have constant velocity (x_1 - x_0), which is trivially simple to compute and minimizes kinetic energy. At inference you simply integrate the ODE from t=0 to t=1 — and because the paths are nearly straight, far fewer steps are needed.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if each particle moves along a straight line from its source position to its target, what happens to the overall distribution as t goes from 0 to 1?">
+  Each particle traces the path x(t) = (1-t)*x_0 + t*x_1. At t=0 all particles are at their Gaussian source positions; at t=1 they are all at their data-distribution targets. In between, the distribution smoothly interpolates. Because all paths are straight and non-crossing (for a single source-target pair), the marginal distribution p_t flows continuously and without backtracking.
+</PredictThenReveal>
+
+**Interact with the widget:** drag the time slider from 0 to 1. Watch the blue particles glide in straight lines from their initial Gaussian positions toward the target. Switch the target mode to BiModal to see particles split toward two clusters — still straight-line paths per particle.
+
+<FlowField client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: at t=0.5 the particles are halfway between source and target. What does the vector field v(x, 0.5) look like at each particle location, and why is this simpler than a DDPM denoising step?">
+  At any intermediate t, v(x, t) = x_1 - x_0 — a constant velocity vector pointing directly from each particle's source to its target. This is the same vector regardless of t, because straight-line paths have constant velocity. In DDPM, the denoising network must predict the full noise residual along a curved, schedule-dependent trajectory, which varies with t. Here the target is a single fixed vector per particle, making the regression problem geometrically simple.
+</PredictThenReveal>
+
+<SrsCard id="flow-matching-intuition" paper="flow-matching" prompt="What is the key geometric advantage of flow matching's straight-line conditional paths over DDPM's curved denoising paths?" answer="Straight-line paths have constant velocity (x_1 - x_0), so the regression target never changes with t. The paths are minimum-kinetic-energy (geodesics), enabling accurate simulation with far fewer ODE steps at inference. DDPM's curved paths require many small steps to track a t-varying noise residual." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What mathematical object does flow matching learn, and at what values of t does it connect which distributions?", options: [
+    { text: "A time-dependent vector field v(x, t) that transports a Gaussian base distribution at t=0 to the data distribution at t=1 via an ODE", correct: true, explain: "The core object is the velocity field v(x, t). Integrating the ODE dx/dt = v(x, t) from t=0 to t=1 continuously maps noise samples to data samples. This contrasts with DDPM's discrete Markov chain, which requires a fixed noise schedule and many steps." },
+    { text: "A score function s(x, t) = ∇ log p_t(x) that is used to run Langevin dynamics from t=T down to t=0", correct: false, explain: "Score matching / score-based diffusion uses the score function for Langevin or SDE-based sampling. Flow matching uses a deterministic ODE with a vector field v(x, t), which is different from the score. While related, they are not the same object." },
+    { text: "A denoising network eps_theta(x_t, t) that predicts the added Gaussian noise at each timestep of a discrete Markov chain", correct: false, explain: "That is the DDPM parameterization. Flow matching does not define a Markov chain or predict noise residuals — it directly regresses a velocity vector field from constructed straight-line conditional paths." },
+  ]},
+  { prompt: "Why does the straight-line conditional path x(t) = (1-t)*x_0 + t*x_1 enable faster sampling at inference?", options: [
+    { text: "The path has constant velocity (x_1 - x_0 for all t), meaning the trajectory is straight and an ODE solver needs very few steps to trace it accurately", correct: true, explain: "A constant-velocity straight line is the simplest possible trajectory. An ODE solver with large step sizes can integrate it exactly (it is affine in t). Curved paths require small steps to avoid integration error; straight paths allow step sizes near 1, reducing the number of network evaluations." },
+    { text: "Straight-line paths avoid the reparameterization trick, so the network can skip computing log-probabilities during inference", correct: false, explain: "The reparameterization trick is a training technique for VAEs, not related to flow matching inference. The speed benefit of flow matching comes from straight-line geometry, not from probability computations." },
+    { text: "The path is defined in latent space where distances are shorter, requiring fewer steps regardless of the network architecture", correct: false, explain: "Flow matching can operate in either pixel space or latent space. The speed benefit is geometric — straight paths with constant velocity — not an artifact of the space being latent. Latent diffusion (LDM) is a separate idea about compressing to latent space." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The generative model is defined by the **probability-flow ODE**:
+
+<Math display expr="\frac{dx}{dt} = v_\theta(x,\, t), \quad t \in [0, 1]" />
+
+Starting from x_0 ~ N(0, I), integrating this ODE to t=1 produces a sample from the learned distribution. The network v_theta is trained to match the **marginal vector field** u_t(x), which is the average velocity at each point (x, t) under the marginal probability path p_t.
+
+The **flow matching loss** is:
+
+<Math display expr="\mathcal{L}_{\text{FM}} = \mathbb{E}_{t \sim U[0,1],\; x \sim p_t(x)}\!\left[\|\, v_\theta(x, t) - u_t(x)\,\|^2\right]" />
+
+The marginal u_t is intractable (it requires integrating over all data points). The key insight of **conditional flow matching** is that training on individual conditional paths is equivalent: for a straight-line path conditioned on a source-target pair (x_0, x_1), the conditional velocity is simply:
+
+<Math display expr="u_t(x \mid x_0, x_1) = x_1 - x_0" />
+
+The conditional path is `x(t) = (1-t) x_0 + t x_1`. Substituting into dx/dt gives the constant vector x_1 - x_0. This makes the regression target constant across all t — an enormous simplification compared to DDPM's t-varying noise prediction.
+
+<DerivationStep client:load
+  question={{
+    prompt: "If x(t) = (1-t)*x_0 + t*x_1, what is dx/dt?",
+    options: [
+      { text: "dx/dt = x_1 - x_0 — a constant vector independent of t", correct: true, explain: "Differentiating: d/dt[(1-t)*x_0 + t*x_1] = -x_0 + x_1 = x_1 - x_0. The derivative of an affine function of t is the constant slope coefficient. This is why the conditional velocity field is trivially simple to compute and why the regression target does not change with t." },
+      { text: "dx/dt = x_0 - x_1 — pointing from target back to source", correct: false, explain: "The sign is reversed. Differentiating (1-t)*x_0 + t*x_1 with respect to t: the x_0 term contributes -x_0 (derivative of (1-t) is -1) and the x_1 term contributes +x_1 (derivative of t is +1). The result is x_1 - x_0, not x_0 - x_1." },
+      { text: "dx/dt = t*(x_1 - x_0) — proportional to t because the path accelerates", correct: false, explain: "The path is linear in t, not quadratic. A linear function has a constant derivative. An accelerating path would look like x(t) = x_0 + t^2*(x_1 - x_0), which is not what the straight-line conditional path uses." },
+    ],
+  }}
+  revealExpr="\frac{d}{dt}\bigl[(1-t)\,x_0 + t\,x_1\bigr] = -x_0 + x_1 = x_1 - x_0"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why is the straight-line conditional path x(t) = (1-t)*x_0 + t*x_1 called the 'optimal transport' path?",
+    options: [
+      { text: "It minimizes the kinetic energy (integral of squared velocity over time), which under constant velocity reduces to ||x_1 - x_0||² — the squared Euclidean distance. Straight lines are geodesics under this metric.", correct: true, explain: "The kinetic energy of a path is ∫_0^1 ||dx/dt||² dt. For a straight-line path with constant velocity v = x_1 - x_0, this is ||x_1 - x_0||² * 1 = ||x_1 - x_0||². Any curved path between the same endpoints has higher energy because it travels farther. Straight lines minimize total transport cost — this is the 1D optimal transport solution." },
+      { text: "It maximizes the entropy of the marginal p_t at intermediate times, which ensures coverage of the data manifold", correct: false, explain: "Entropy maximization is not the optimality criterion here. The straight-line path minimizes kinetic energy (transport cost), not entropy. Entropy of the marginal is a property of the distribution, not the individual conditional paths." },
+      { text: "It ensures that each particle's path crosses every other particle's path exactly once, creating optimal mixing", correct: false, explain: "Straight-line paths from distinct (x_0, x_1) pairs can cross each other in the marginal flow — this is expected and not a problem. The optimality is about minimizing the cost of moving each individual particle from its source to its target, not about crossing behavior." },
+    ],
+  }}
+  revealExpr="\text{Kinetic energy: } \int_0^1 \|v\|^2\,dt = \|x_1 - x_0\|^2 \;\text{(minimum for straight line)}"
+/>
+
+<SrsCard id="flow-matching-cfm-loss" paper="flow-matching" prompt="Write the conditional flow matching training target for a straight-line path and explain why it is constant across t." answer="The conditional velocity target is u_t(x | x_0, x_1) = x_1 - x_0. Because the path x(t) = (1-t)*x_0 + t*x_1 is affine in t, its derivative is the constant slope x_1 - x_0. This makes the regression target independent of t — the network must learn to predict a fixed vector at every point on the path, which is much simpler than DDPM's t-varying noise residual." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The conditional flow matching loss trains v_theta to match u_t(x | x_0, x_1) = x_1 - x_0. What does the network input and predict at each training step?", options: [
+    { text: "Input: the interpolated point x_t = (1-t)*x_0 + t*x_1 and the time t; Output: the velocity vector x_1 - x_0 pointing from source to target", correct: true, explain: "Given a source x_0, a data sample x_1, and a randomly sampled time t ~ U[0,1], we compute x_t as the interpolation and feed (x_t, t) into the network. The regression target is the constant x_1 - x_0. After training, v_theta(x_t, t) approximates the marginal velocity field at every (x, t)." },
+    { text: "Input: the noise x_0 and timestep t; Output: the denoised data estimate x_1 directly", correct: false, explain: "That is closer to the DDPM x_0-prediction parameterization. Flow matching predicts a velocity vector, not the clean data. The network receives the interpolated x_t (not just x_0), and its target is the velocity x_1 - x_0 (not x_1 itself)." },
+    { text: "Input: the score ∇log p_t(x_t); Output: the correction needed to move toward the data manifold", correct: false, explain: "Score-based models use the score function as input or target. Flow matching uses the velocity field, which is a distinct object. The score and the velocity are related by a change of variables, but the training procedure and targets are different." },
+  ]},
+  { prompt: "How does the CFM objective L_CFM relate to the intractable FM objective L_FM?", options: [
+    { text: "They have the same gradient with respect to theta — minimizing L_CFM is equivalent to minimizing L_FM, so the tractable conditional loss can replace the intractable marginal loss without bias", correct: true, explain: "The paper shows that ∇_theta L_CFM = ∇_theta L_FM. The conditional loss decomposes the marginal expectation into a conditional average over (x_0, x_1) pairs, which is easy to sample. Because the gradients match, stochastic gradient descent on L_CFM converges to the same solution as minimizing L_FM." },
+    { text: "L_CFM is a lower bound on L_FM, so minimizing the conditional loss only partially minimizes the marginal loss", correct: false, explain: "The relationship is stronger than a lower bound — the gradients are equal. This means L_CFM and L_FM are minimized by exactly the same parameters. It is not a variational bound; it is an exact equivalence in gradient, allowing the conditional loss to be used without any approximation error." },
+    { text: "L_CFM approximates L_FM only when the batch size is large enough to cover the full data distribution", correct: false, explain: "The equivalence holds in expectation, not asymptotically in batch size. Even with a single (x_0, x_1) pair per step, the expected gradient of L_CFM equals the gradient of L_FM. Large batch sizes improve gradient variance but not the correctness of the equivalence." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of a single flow-matching training iteration in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample source noise: x_0 ~ N(0, I)",
+  "Sample data point: x_1 ~ p_data",
+  "Sample time: t ~ Uniform(0, 1)",
+  "Compute interpolation and target velocity: x_t = (1-t)*x_0 + t*x_1; target = x_1 - x_0",
+  "Compute MSE loss: L = ||v_theta(x_t, t) - target||^2 and update theta",
+]} />
+
+Fill in the blank — the target velocity in the conditional flow matching loss:
+
+```text
+def cfm_loss(v_net, x0, x1, t):
+    x_t = (1 - t) * x0 + t * x1
+    target = _______
+    return mean_squared_error(v_net(x_t, t), target)
+```
+
+<FillBlank answer="x1 - x0" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the flow matching training loop, what three quantities must be sampled at each step?", options: [
+    { text: "Source noise x_0 ~ N(0, I), data sample x_1 ~ p_data, and time t ~ U[0,1] — these determine the interpolated point x_t and the constant regression target x_1 - x_0", correct: true, explain: "All three are independent random draws per training step. x_0 provides the base-distribution endpoint, x_1 the data endpoint, and t sets where along the path we evaluate. The interpolated point x_t = (1-t)*x_0 + t*x_1 is then deterministically computed from these three samples." },
+    { text: "Noise level sigma_t from a schedule, noisy image x_t, and the clean image x_0 — matching the DDPM forward process", correct: false, explain: "Flow matching does not use a noise schedule or define x_t via a noisy corruption process. Instead, x_t is a linear interpolation between a source noise sample x_0 and a data sample x_1. The time t is sampled uniformly, not from a discrete schedule." },
+    { text: "Two clean data samples x_a and x_b, and a mixing weight lambda ~ Beta(0.5, 0.5) — equivalent to Mixup augmentation", correct: false, explain: "Flow matching samples one noise point and one data point, not two data points. The source is always x_0 ~ N(0, I), not another data sample. Using two data points would define a transport between two parts of the data distribution, which is a different setup (rectified flow can do this, but standard CFM uses a Gaussian source)." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the flow-matching loss for straight-line conditional paths in NumPy. Given arrays `x0` (N, d) and `x1` (N, d), and a mock network function `v_net(x, t)`, return the MSE loss between the network output and the conditional velocity target.
+
+<HintFade client:load
+  hints={[
+    "The conditional velocity target for straight-line paths is simply x1 - x0 — a constant array, independent of t. Compute it directly.",
+    "The interpolated point is x_t = (1 - t) * x0 + t * x1. Call v_net(x_t, t) to get the network's prediction, then compute the squared error against x1 - x0.",
+    "Full structure: target = x1 - x0; x_t = (1-t)*x0 + t*x1; pred = v_net(x_t, t); loss = np.mean((pred - target)**2). Return loss.",
+  ]}
+  solutionCode={`import numpy as np
+
+def flow_matching_loss(v_net, x0, x1, t):
+    """
+    v_net: callable(x, t) -> array (N, d)
+    x0:   (N, d) source samples from N(0, I)
+    x1:   (N, d) data samples
+    t:    float in [0, 1], current time
+    returns: scalar MSE loss
+    """
+    target = x1 - x0                    # constant conditional velocity
+    x_t = (1 - t) * x0 + t * x1        # interpolated point
+    pred = v_net(x_t, t)                # network prediction
+    return np.mean((pred - target) ** 2)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def flow_matching_loss(v_net, x0, x1, t):
+    """
+    v_net: callable(x, t) -> array (N, d)
+    x0:   (N, d) source samples from N(0, I)
+    x1:   (N, d) data samples
+    t:    float in [0, 1]
+    returns: scalar MSE loss
+    """
+    # TODO: implement flow matching loss
+    pass
+
+# Mock network for testing
+def v_net_mock(x, t):
+    return x * np.sin(t)
+
+# Sanity check
+np.random.seed(42)
+x0 = np.random.randn(8, 4)
+x1 = np.random.randn(8, 4)
+t = 0.5
+loss = flow_matching_loss(v_net_mock, x0, x1, t)
+print("Loss:", loss)
+print("Non-negative:", loss >= 0 if loss is not None else "None returned")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def flow_matching_loss(v_net, x0, x1, t):
+    target = x1 - x0
+    x_t = (1 - t) * x0 + t * x1
+    pred = v_net(x_t, t)
+    return np.mean((pred - target) ** 2)
+`}
+  testCode={`import numpy as np
+
+def flow_matching_loss(v_net, x0, x1, t):
+    target = x1 - x0
+    x_t = (1 - t) * x0 + t * x1
+    pred = v_net(x_t, t)
+    return np.mean((pred - target) ** 2)
+
+np.random.seed(7)
+x0 = np.random.randn(16, 8)
+x1 = np.random.randn(16, 8)
+
+# Test 1: loss is non-negative for a mock network
+def v_net_mock(x, t):
+    return x * np.sin(t)
+
+loss = flow_matching_loss(v_net_mock, x0, x1, 0.3)
+assert loss >= 0, f"Loss must be non-negative, got {loss}"
+
+# Test 2: loss is zero when v_net returns the exact target
+def v_net_perfect(x, t):
+    # This network always returns x1 - x0 regardless of input.
+    # Since x0 and x1 are captured from outer scope, this tests zero loss.
+    return x1 - x0
+
+loss_perfect = flow_matching_loss(v_net_perfect, x0, x1, 0.5)
+assert np.isclose(loss_perfect, 0.0, atol=1e-10), f"Perfect network should give zero loss, got {loss_perfect}"
+
+# Test 3: output is a scalar
+loss_val = flow_matching_loss(v_net_mock, x0, x1, 0.7)
+assert np.ndim(loss_val) == 0 or (hasattr(loss_val, '__len__') is False), "Loss should be a scalar"
+
+# Test 4: target is independent of t (interpolation point changes but target does not)
+def v_net_record_input(x, t):
+    v_net_record_input.last_x = x.copy()
+    return x1 - x0  # return perfect prediction
+
+loss_t0 = flow_matching_loss(v_net_record_input, x0, x1, 0.0)
+x_at_t0 = v_net_record_input.last_x.copy()
+loss_t1 = flow_matching_loss(v_net_record_input, x0, x1, 1.0)
+x_at_t1 = v_net_record_input.last_x.copy()
+assert not np.allclose(x_at_t0, x_at_t1), "Interpolated x_t should differ at t=0 and t=1"
+assert np.isclose(loss_t0, 0.0) and np.isclose(loss_t1, 0.0), "Perfect net gives zero at all t"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the flow_matching_loss function, what is the relationship between the target and the time variable t?", options: [
+    { text: "The target x1 - x0 is completely independent of t — it is the same constant velocity vector no matter what t is sampled", correct: true, explain: "This is the key simplicity of straight-line conditional flow matching. The velocity needed to travel from x_0 to x_1 in unit time is always x_1 - x_0 regardless of where on the path you are. t only affects which x_t is fed to the network — the regression target itself never changes with t." },
+    { text: "The target scales linearly with t: target = t * (x1 - x0), because particles move faster as t approaches 1", correct: false, explain: "Particles on a straight line move at constant speed, not accelerating speed. The velocity is dx/dt = x_1 - x_0, which is constant. Only paths with non-linear parameterizations (like cosine schedules) would have t-dependent velocities." },
+    { text: "The target depends on t through the noise schedule sigma_t, matching the DDPM parameterization at each noise level", correct: false, explain: "Flow matching has no noise schedule. The target is purely geometric — it is the vector from source to destination — and requires no schedule or t-dependent scaling. This independence from t is what makes conditional flow matching especially clean compared to score-based methods." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2210.02747.pdf" title="Flow Matching for Generative Modeling (Lipman et al. 2022)" />
+
+Suggested reading order: §1 (Introduction — motivation and comparison to diffusion score matching) → §3 (Flow Matching — the ODE formulation and the FM objective) → §4 (Conditional Flow Matching — the tractable CFM loss and the equivalence to FM gradients).
+
+</StageSection>
