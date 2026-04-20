@@ -10,6 +10,9 @@ export default defineConfig({
   integrations: [react(), mdx()],
 
   vite: {
-    plugins: [tailwindcss()]
+    plugins: [tailwindcss()],
+    worker: { format: "es" },
+    optimizeDeps: { exclude: ["pyodide"] },
+    ssr: { noExternal: ["@monaco-editor/react"] },
   }
 });
