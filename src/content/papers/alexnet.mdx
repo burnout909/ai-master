@@ -1,0 +1,239 @@
+---
+slug: alexnet
+title: "ImageNet Classification with Deep Convolutional Neural Networks"
+authors: "Krizhevsky, Sutskever, Hinton"
+year: 2012
+era: foundations
+arxivId: "1102.0183"
+estimatedMinutes: 45
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { ActivationCompare } from "../../components/widgets/ActivationCompare.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before 2012, training deep neural networks with many layers was nearly impossible. The culprit: **saturating activations**. Both tanh and sigmoid squash their outputs into a bounded range, and once you get far from zero — say, x = 5 or x = −5 — the derivative collapses toward zero. Multiply those near-zero gradients across 8 layers and the signal vanishes long before it reaches early weights.
+
+**Setup:** play with the widget below. Set x = 5, then cycle through sigmoid → tanh → ReLU. Watch f′(x).
+
+<PredictThenReveal client:load predictPrompt="Before touching the widget: at x = 5, what do you expect f′(x) to be for tanh vs ReLU? Write your guess, then check.">
+  At x = 5, tanh′(5) ≈ 0.0001 — effectively zero. Sigmoid′(5) ≈ 0.0066 — also nearly dead. But ReLU′(5) = **1.0**, always. That is the entire story of why deep networks became trainable. AlexNet stacked 8 layers (5 conv + 3 FC), 60 million parameters, trained on two GTX 580 GPUs. With tanh they could not have gotten the gradients through; with ReLU they won ImageNet 2012 by 10.9 percentage points over the next best entry.
+</PredictThenReveal>
+
+<ActivationCompare client:load />
+
+<PredictThenReveal client:load predictPrompt="Predict: if you replace all ReLUs with sigmoid in a 5-layer network and keep everything else the same, what happens to training? Why?">
+  **Training stalls or diverges.** The sigmoid gradient at |x| > 3 is < 0.045. Chained across 5 layers: 0.045⁵ ≈ 1.8 × 10⁻⁷. Weights in early layers receive a signal 5 million times smaller than the last layer — the classic vanishing gradient problem. ReLU short-circuits this: positive activations pass gradient = 1 unchanged.
+</PredictThenReveal>
+
+<SrsCard id="alexnet-relu" paper="alexnet" prompt="Why did ReLU make deep CNNs trainable in 2012?" answer="ReLU's derivative is 1 for x > 0, so gradients don't vanish through many layers. Tanh/sigmoid derivatives collapse to ~0 at large |x|, making deep networks untrainable." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is f′(x) for ReLU when x > 0?", options: [
+    { text: "1", correct: true, explain: "f(x) = max(0, x), so f′(x) = 1 for all x > 0." },
+    { text: "x", correct: false, explain: "That would be f(x), not the derivative." },
+    { text: "0", correct: false, explain: "ReLU is 0 only for x ≤ 0." },
+  ]},
+  { prompt: "AlexNet beat the 2011 ImageNet winner by roughly:", options: [
+    { text: "10 percentage points in top-5 error", correct: true, explain: "AlexNet 15.3% vs runner-up 26.2% top-5 error." },
+    { text: "1 percentage point", correct: false, explain: "The gap was ~10 pp — a massive jump." },
+    { text: "50 percentage points", correct: false, explain: "That would be near-perfect vs near-chance." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+**Three activation functions:**
+
+ReLU (Rectified Linear Unit):
+
+<Math display expr="f(x) = \max(0,\, x), \qquad f'(x) = \begin{cases} 1 & x > 0 \\ 0 & x \le 0 \end{cases}" />
+
+Tanh:
+
+<Math display expr="f(x) = \frac{e^x - e^{-x}}{e^x + e^{-x}}, \qquad f'(x) = 1 - \tanh^2(x)" />
+
+Sigmoid:
+
+<Math display expr="f(x) = \frac{1}{1 + e^{-x}}, \qquad f'(x) = f(x)\bigl(1 - f(x)\bigr)" />
+
+**Why tanh gradient vanishes — derivation:**
+
+The tanh derivative peaks at x = 0 where tanh(0) = 0, giving f′(0) = 1 − 0² = 1. As |x| grows, tanh(x) → ±1, so:
+
+<Math display expr="f'(x) = 1 - \tanh^2(x) \;\to\; 1 - 1 = 0 \quad \text{as } |x| \to \infty" />
+
+<DerivationStep client:load
+  question={{
+    prompt: "At x = 2, tanh(2) ≈ 0.964. What is tanh′(2)?",
+    options: [
+      { text: "≈ 0.071", correct: true, explain: "1 − 0.964² = 1 − 0.929 = 0.071. Nearly zero already at x = 2." },
+      { text: "≈ 0.5", correct: false, explain: "That would require tanh(2) ≈ 0.707, but tanh saturates faster." },
+      { text: "≈ 1.0", correct: false, explain: "tanh′ = 1 only at x = 0." },
+    ],
+  }}
+  revealExpr="\tanh'(2) = 1 - \tanh^2(2) \approx 1 - 0.964^2 \approx 0.071"
+/>
+
+**Softmax output layer:**
+
+AlexNet's final layer outputs a probability distribution over 1000 ImageNet classes using softmax:
+
+<Math display expr="\text{softmax}(z)_j = \frac{e^{z_j}}{\sum_{k=1}^{K} e^{z_k}}" />
+
+<DerivationStep client:load
+  question={{
+    prompt: "Softmax outputs must satisfy what constraint?",
+    options: [
+      { text: "They sum to 1 and each is in (0, 1)", correct: true, explain: "The denominator normalizes all e^z_k so the sum equals 1 — a valid probability distribution." },
+      { text: "They sum to K (number of classes)", correct: false, explain: "Dividing by the sum of all e^z_k ensures the total is exactly 1." },
+      { text: "The maximum is always 1", correct: false, explain: "Only if one logit dominates infinitely — in practice all outputs are < 1." },
+    ],
+  }}
+  revealExpr="\sum_{j=1}^{K} \text{softmax}(z)_j = \frac{\sum_j e^{z_j}}{\sum_k e^{z_k}} = 1"
+/>
+
+<SrsCard id="alexnet-softmax" paper="alexnet" prompt="Why does softmax output a valid probability distribution?" answer="Each output is e^z_j divided by the sum of all e^z_k, so they are positive and sum to exactly 1." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "tanh′(x) reaches its maximum value at:", options: [
+    { text: "x = 0", correct: true, explain: "tanh(0) = 0, so tanh′(0) = 1 − 0 = 1, the maximum." },
+    { text: "x = 1", correct: false, explain: "tanh(1) ≈ 0.76, giving tanh′(1) ≈ 0.42 < 1." },
+    { text: "x = ∞", correct: false, explain: "tanh → 1 at infinity, so tanh′ → 0." },
+  ]},
+  { prompt: "In softmax, what ensures the outputs are positive?", options: [
+    { text: "The exponential function e^z is always > 0", correct: true, explain: "exp is strictly positive for all real inputs." },
+    { text: "The logits z_j must be positive", correct: false, explain: "Logits can be negative; exp makes them positive." },
+    { text: "A ReLU applied after softmax", correct: false, explain: "Softmax needs no ReLU; exp handles positivity." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the steps of a forward pass through one AlexNet convolutional layer in correct order:
+
+<LineReorder client:load lines={[
+  "Convolve input with learned filters → feature map z",
+  "Apply ReLU activation → a = max(0, z)",
+  "Max-pool: take max in each k×k window → downsampled map",
+  "Local Response Normalize → output to next layer",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def conv_layer_forward(x, W, b):
+    z = convolve(x, W) + b          # linear transform
+    a = _______                      # ← activation
+    pooled = max_pool(a, kernel=3)
+    out = local_response_norm(pooled)
+    return out
+```
+
+<FillBlank answer="max(0, z)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Max pooling in AlexNet primarily serves to:", options: [
+    { text: "Reduce spatial dimensions and add translation invariance", correct: true, explain: "Taking the max in each region halves width/height and keeps the strongest activation regardless of exact position." },
+    { text: "Increase the number of channels", correct: false, explain: "Pooling doesn't change channel count — conv layers do." },
+    { text: "Apply non-linearity", correct: false, explain: "That's ReLU's job. Max-pooling is a downsampling operation." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement ReLU and its derivative in NumPy.
+
+<HintFade client:load
+  hints={[
+    "ReLU clips negatives to zero. NumPy has np.maximum(0, x) or you can use np.where.",
+    "The derivative is 1 where x > 0 and 0 elsewhere. Use (x > 0).astype(float) or np.where(x > 0, 1.0, 0.0).",
+    "For relu_prime, watch the boundary: x = 0 is conventionally 0 (sub-gradient). Use strict >.",
+  ]}
+  solutionCode={`import numpy as np
+
+def relu(x):
+    return np.maximum(0, x)
+
+def relu_prime(x):
+    return (x > 0).astype(float)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def relu(x):
+    # TODO: return max(0, x) element-wise
+    pass
+
+def relu_prime(x):
+    # TODO: return 1 where x > 0, else 0
+    pass
+
+# Quick sanity check
+print("relu(5):", relu(5))
+print("relu(-3):", relu(-3))
+print("relu_prime(2):", relu_prime(2))
+print("relu_prime(-1):", relu_prime(-1))
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`
+import numpy as np
+def relu(x):
+    return np.maximum(0, x)
+def relu_prime(x):
+    return (x > 0).astype(float)
+`}
+  testCode={`
+import numpy as np
+assert relu(5) == 5, f"relu(5) should be 5, got {relu(5)}"
+assert relu(-3) == 0, f"relu(-3) should be 0, got {relu(-3)}"
+assert relu_prime(2) == 1, f"relu_prime(2) should be 1, got {relu_prime(2)}"
+assert relu_prime(-1) == 0, f"relu_prime(-1) should be 0, got {relu_prime(-1)}"
+arr = np.array([-2.0, 0.0, 3.0])
+np.testing.assert_array_equal(relu(arr), [0.0, 0.0, 3.0])
+np.testing.assert_array_equal(relu_prime(arr), [0.0, 0.0, 1.0])
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "np.maximum(0, x) vs np.max(x) — which implements ReLU?", options: [
+    { text: "np.maximum(0, x) — element-wise comparison with 0", correct: true, explain: "np.max returns the scalar maximum across the array. np.maximum(0, x) clips each element." },
+    { text: "np.max(x) — returns the array maximum", correct: false, explain: "np.max returns a scalar (or reduced array), not element-wise clipping." },
+    { text: "Both are equivalent", correct: false, explain: "They do very different things on arrays." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1102.0183.pdf" title="ImageNet Classification with Deep CNNs" />
+
+Suggested reading order: §3 Architecture → §3.1 ReLU Nonlinearity → §4 Reducing Overfitting (Dropout) → §6 Results.
+
+</StageSection>
