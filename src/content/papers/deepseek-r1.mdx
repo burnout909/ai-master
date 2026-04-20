@@ -1,0 +1,265 @@
+---
+slug: deepseek-r1
+title: "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning"
+authors: "DeepSeek-AI"
+year: 2025
+era: agents
+arxivId: "2501.12948"
+estimatedMinutes: 50
+prerequisites: ["cot", "ppo"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { RlRewardCurve } from "../../components/widgets/RlRewardCurve.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Most reasoning models are trained with instruction-style supervised fine-tuning (SFT) followed by RLHF: first show the model thousands of worked examples, then use human preference signals to refine the outputs. DeepSeek-R1-Zero does something striking: **skip SFT entirely and train with reinforcement learning from verifiable rewards**. The reward signal is grounded — a correct-answer checker for math problems, unit tests for code — not a learned preference model that can be gamed. No human labels, no curated chain-of-thought demonstrations.
+
+What happens when you train this way? Two things emerge that weren't explicitly programmed. First, **response length roughly doubles** over the course of training: the model discovers on its own that longer reasoning chains give more opportunity to catch errors and backtrack on hard problems. Second, **"aha moments"** appear — places where the model writes something like "wait, I made an error earlier" and then corrects itself. Self-verification emerges from the reward signal alone, not from any imitation.
+
+<PredictThenReveal client:load predictPrompt="Before touching the widget: if you slide training step from 0 to 200, you predict accuracy will climb. But what do you predict happens to response length — does it stay flat, grow steadily, or plateau early? Why?">
+  Response length grows roughly proportionally with training step and does not plateau early. Longer responses give the model more token budget to reason through sub-problems and to detect and fix errors. Because the verifiable reward only fires for final correctness, the model is under pressure to be right — and it learns that extended scratchpad space helps achieve that. The growth is roughly linear (not a sharp early jump) because the RL signal reinforces each incremental improvement in reasoning depth.
+</PredictThenReveal>
+
+**Interact with the widget:** slide the training step from 0 to 200 and watch accuracy climb while average response length grows. Toggle "Show supervised baseline" to see the flat 55% ceiling of a model trained only on SFT without RL — pure RL-from-scratch eventually surpasses it. The amber "aha moments" counter tallies emergent self-correction events.
+
+<RlRewardCurve client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: the SFT baseline is flat at 55%. Why can't you just collect more SFT data to exceed that ceiling, rather than using RL?">
+  SFT is bounded by the quality of the demonstration data. If the reference solutions don't show backtracking and self-correction, the model won't learn to do them. RL from verifiable rewards has no such ceiling: it can discover reasoning strategies that never appeared in any human-written chain-of-thought, as long as they produce correct final answers. The signal is outcome-based, not imitation-based, so the model can explore and exploit solution paths that humans never wrote down.
+</PredictThenReveal>
+
+<SrsCard id="deepseek-r1-rl-zero" paper="deepseek-r1" prompt="What makes DeepSeek-R1-Zero different from standard RLHF-trained reasoning models?" answer="R1-Zero skips the SFT warm-up entirely. It trains from a base model using only verifiable rewards (correct-answer checker for math, unit tests for code) via GRPO. No human-labeled chain-of-thought demonstrations are required. Emergent behaviors — increasing response length, self-verification, aha-moment corrections — arise from the RL signal alone." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does using a verifiable reward (e.g., correct-answer checker) prevent reward hacking, while a learned reward model does not?", options: [
+    { text: "A verifiable reward is grounded in the actual problem: it checks whether the final answer is mathematically correct or whether the code passes unit tests. There is no proxy model to exploit. A learned reward model can be gamed by generating outputs that superficially resemble preferred completions without solving the problem.", correct: true, explain: "Reward hacking occurs when the model finds outputs that score highly on the reward proxy without achieving the true objective. A verifiable reward has no proxy — correctness is the objective and also the signal. For math, the checker computes the answer; for code, the tests run the program. Neither can be exploited by stylistic mimicry." },
+    { text: "Verifiable rewards are computed faster than learned reward models, so the RL loop converges before the model has time to discover exploits.", correct: false, explain: "Training speed is not the mechanism. The key property is grounding: a verifiable reward cannot be fooled by outputs that look good but are wrong, because correctness is checked directly rather than approximated." },
+    { text: "Verifiable rewards use a separate held-out test set, so the model cannot memorize the reward function the way it could memorize a learned reward model.", correct: false, explain: "Held-out test sets are a data-split concern, not the defining property of verifiable rewards. The critical feature is that the reward is computed from the ground-truth answer or test execution — it is objectively correct or incorrect, not a learned approximation." },
+  ]},
+  { prompt: "DeepSeek-R1 adds a small SFT warm-up before RL, on top of R1-Zero's pure-RL approach. What problem does this warm-up solve?", options: [
+    { text: "R1-Zero's outputs are sometimes hard to read: mixed languages, poor formatting, repetition. The SFT warm-up on a small set of curated chain-of-thought examples improves output readability and format consistency before RL continues refining reasoning quality.", correct: true, explain: "Pure RL from a base model optimizes for correctness but not for human-readable structure. R1-Zero outputs sometimes switch languages mid-response or repeat phrases. A brief SFT stage on clean examples teaches the model to use the required tag structure (`<think>...</think><answer>...</answer>`) and consistent language before RL pushes accuracy further." },
+    { text: "The SFT warm-up provides the model with domain knowledge about math and coding that the base model lacks, which is necessary for the RL reward signal to be informative.", correct: false, explain: "The base model already has substantial math and code knowledge from pretraining. The SFT warm-up is not about injecting domain knowledge — it is about improving output format and readability, which pure RL does not prioritize." },
+    { text: "Without the SFT warm-up, GRPO's policy gradient updates would have too high a variance to converge, because the base model produces completely random outputs.", correct: false, explain: "Base LLMs are not random — they have strong pretraining signals. GRPO can and does converge from a base model without SFT (that is R1-Zero). The SFT warm-up is for quality-of-life improvements in output format, not for algorithmic stability." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+DeepSeek-R1 trains with **GRPO** (Group Relative Policy Optimization), a PPO variant that avoids maintaining a separate critic network. Instead, for each prompt the algorithm samples a group of G responses, scores each with the verifiable reward, and computes a group-normalized advantage. The policy-gradient update then uses this advantage with a KL penalty to keep the new policy close to a frozen reference.
+
+The composite reward for a single response is:
+
+<Math display expr="r = r_{\text{accuracy}} + r_{\text{format}}" />
+
+where `r_accuracy = 1` if the final answer is verified correct (zero otherwise), and `r_format = 1` if the response obeys the required tag structure `<think>...</think><answer>...</answer>` (zero otherwise). Both components are binary and verifiable — no learned proxy.
+
+The group-normalized advantage for response `i` in a group of G responses sampled for the same prompt is:
+
+<Math display expr="\hat{A}_i = \frac{r_i - \mu_{\text{group}}}{\sigma_{\text{group}}}" />
+
+where `\mu_group = (1/G) \sum_{j=1}^G r_j` and `\sigma_group = \sqrt{(1/G)\sum_{j=1}^G (r_j - \mu_group)^2}`. This replaces the critic's value estimate entirely: the baseline is the empirical mean reward within the group.
+
+The GRPO objective clips the ratio and adds a KL penalty to the reference policy `\pi_ref`:
+
+<Math display expr="\mathcal{L}_{\text{GRPO}} = -\mathbb{E}\!\left[\sum_{i=1}^G \min\!\left(\rho_i \hat{A}_i,\; \text{clip}(\rho_i, 1-\varepsilon, 1+\varepsilon)\hat{A}_i\right)\right] + \beta\, D_{\text{KL}}(\pi_\theta \| \pi_{\text{ref}})" />
+
+where `\rho_i = \pi_\theta(o_i | q) / \pi_{\text{ref}}(o_i | q)` is the probability ratio and `\beta` controls the KL penalty strength.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why is verifiable reward critical — what goes wrong if you use a learned reward model (RLHF-style) instead?",
+    options: [
+      { text: "A learned reward model is a proxy for human preference and can be exploited: the policy learns to produce outputs that score highly on the proxy without actually solving the problem correctly (reward hacking). A verifiable reward — checking the final numeric answer or running unit tests — has no proxy to exploit; correctness is both the objective and the signal.", correct: true, explain: "This is the fundamental advantage of outcome-based rewards for domains with checkable answers. In math, you can verify 42 == 42. In code, you can run the tests. There is no way to fool the checker by writing something that 'looks' correct. Learned reward models are estimated from human comparisons and contain approximation error that policies can exploit over many RL steps." },
+      { text: "Learned reward models require more GPU memory than a simple verifiable checker, so training with RLHF would exceed the hardware budget for a model of this scale.", correct: false, explain: "Hardware cost is not the principled motivation. The conceptual reason is reward grounding: verifiable rewards cannot be hacked because they check the actual answer. Memory constraints are an engineering consideration, not the scientific rationale." },
+      { text: "Human annotators cannot reliably judge chain-of-thought reasoning steps, so RLHF preference labels would be too noisy for RL to converge.", correct: false, explain: "While annotator reliability on long chains is a real concern, it is not the core argument here. The critical issue is that learned models introduce approximation error that the policy can exploit, even with perfect human labels. Verifiable rewards eliminate approximation entirely for the domains where ground truth is computable." },
+    ],
+  }}
+  revealExpr="r_{\text{accuracy}} \in \{0,1\}: \text{grounded, no proxy to hack}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does response length grow during training? The reward only checks final correctness — it doesn't explicitly reward longer responses.",
+    options: [
+      { text: "Longer chains give more token budget for sub-steps, intermediate checks, and backtracking. On hard problems the model learns that extended scratchpad space correlates with reaching the correct final answer. Because the RL signal rewards correctness, and longer reasoning empirically achieves higher correctness on difficult items, length grows as an instrumental strategy.", correct: true, explain: "This is a key emergent finding: length is never directly rewarded, yet it grows. The causal chain is: (1) hard problems require multiple sub-steps; (2) more tokens allow more sub-steps and self-correction; (3) self-correction increases final correctness; (4) the verifiable reward fires for correctness. Length increases because it serves as a scaffold for the reasoning that earns reward." },
+      { text: "The KL penalty term in GRPO explicitly penalizes short responses that deviate from the reference policy's length distribution, so the policy lengthens responses to minimize KL.", correct: false, explain: "The KL penalty keeps the policy close to the reference policy, which is the initial base model. The base model produces responses of moderate length — the KL term would actually resist large length changes. The length growth comes from the accuracy reward, not from KL regularization." },
+      { text: "The format reward `r_format` awards a bonus for including more `<think>` sub-sections, incentivizing the model to write longer structured outputs to maximize format points.", correct: false, explain: "The format reward is binary: it checks whether the response contains exactly the required `<think>...</think><answer>...</answer>` structure. It does not give extra credit for more sub-sections or longer think blocks. Length growth is driven entirely by the accuracy reward." },
+    ],
+  }}
+  revealExpr="\text{longer chain} \Rightarrow \text{more self-check} \Rightarrow \text{higher } r_{\text{accuracy}}"
+/>
+
+<SrsCard id="deepseek-r1-grpo-advantage" paper="deepseek-r1" prompt="Write the GRPO group-normalized advantage formula and explain why it replaces the critic." answer="A_hat_i = (r_i - mean(r_group)) / std(r_group). The group mean serves as the baseline (replacing the critic's value estimate) and the group std normalizes the scale. By sampling G responses per prompt and computing the advantage within the group, GRPO avoids training a separate value network entirely — the empirical group statistics provide the baseline signal at no extra parameter cost." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "GRPO samples G responses for the same prompt and normalizes advantages within the group. What would happen if G=1 (only one response per prompt)?", options: [
+    { text: "With G=1 the group mean equals r_1 and the group std is 0, so the normalized advantage is undefined (division by zero). Even if handled gracefully, a single sample provides no contrast signal: there is nothing to compare the response against within the group, so the advantage carries no information about relative quality.", correct: true, explain: "Group normalization requires variance within the group to produce a meaningful signal. With G=1, every response has advantage 0 (after mean subtraction) and the update vanishes. The GRPO insight is that comparing multiple responses to the same prompt — some correct, some not — gives a cheap critic-free baseline. G=1 eliminates that contrast." },
+    { text: "With G=1 the method reduces to standard PPO with a learned critic, because a single response cannot form a group and the algorithm falls back to value-network estimation.", correct: false, explain: "GRPO does not have a learned critic to fall back on. With G=1, the advantage is simply 0 (or undefined) — there is no fallback mechanism. The method would produce zero or degenerate gradient updates, not standard PPO." },
+    { text: "With G=1, GRPO becomes equivalent to REINFORCE with a constant baseline of zero, which still provides a valid (though high-variance) policy gradient signal.", correct: false, explain: "REINFORCE with baseline zero would use r_1 directly as the advantage. But in GRPO the group mean IS the baseline, so with G=1 the advantage is r_1 - r_1 = 0, giving a zero gradient. This is not equivalent to REINFORCE — it is a zero update." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of one GRPO iteration in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample a group of G responses o_1...o_G for prompt q from current policy pi_theta",
+  "Score each response: r_i = r_accuracy(o_i, q) + r_format(o_i)",
+  "Compute group-normalized advantage: A_hat_i = (r_i - mean(r_group)) / std(r_group)",
+  "Compute clipped policy-gradient loss with KL penalty to reference policy pi_ref",
+  "Update pi_theta via gradient descent on the GRPO loss",
+]} />
+
+Fill in the blank — the group-normalization line inside the GRPO advantage computation:
+
+```text
+def grpo_advantage(rewards):
+    # rewards: list of G scalar rewards for same prompt
+    mu = sum(rewards) / len(rewards)
+    sigma = (sum((r - mu)**2 for r in rewards) / len(rewards)) ** 0.5
+    return [_______  for r in rewards]
+```
+
+<FillBlank answer="(r - mu) / (sigma + 1e-8)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the GRPO loop, the KL penalty uses a frozen reference policy pi_ref. What is pi_ref and why is it frozen?", options: [
+    { text: "pi_ref is the policy checkpoint before the current RL phase (typically the SFT-warmed or base model). It is frozen so that the KL term provides a stable anchor: the penalty prevents the updated policy from drifting too far in parameter space, which would destabilize training and potentially collapse the language model's general capabilities.", correct: true, explain: "Without a KL penalty, aggressive policy gradient updates can catastrophically change the model's behavior — it might overfit to reward-maximizing outputs while forgetting everything else. The frozen reference acts as a regularizer: you can improve reasoning as long as you stay within a KL radius of the starting point. The reference must be frozen, not updated, to provide a consistent anchor throughout training." },
+    { text: "pi_ref is updated every K steps to track the current policy, like a target network in DQN, which prevents the KL penalty from becoming too large as the policy improves.", correct: false, explain: "Updating pi_ref like a target network would continuously reset the anchor, allowing unbounded drift over many updates. GRPO uses a fixed frozen reference (the original checkpoint) to maintain a stable constraint throughout the entire RL phase." },
+    { text: "pi_ref is a separate smaller model trained to mimic human preferences, and it is frozen because human preferences are assumed not to change during the RL run.", correct: false, explain: "pi_ref is not a preference model — it is the same model architecture as pi_theta, initialized at the start of RL. It plays no role in modeling human preferences; its purpose is purely as a regularization anchor to prevent catastrophic forgetting and training instability." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement **group-normalized advantages** in NumPy. Given `rewards` of shape `(B, G)` where B is batch size and G is group size, return a `(B, G)` array of advantages: subtract the per-row mean and divide by the per-row standard deviation plus epsilon. Each row is one group (all responses sampled for the same prompt).
+
+<HintFade client:load
+  hints={[
+    "Use `np.mean(rewards, axis=1, keepdims=True)` to get the per-row mean with shape `(B, 1)` — broadcasting will handle the subtraction across all G columns automatically.",
+    "Use `np.std(rewards, axis=1, keepdims=True)` for the per-row standard deviation. Then `(rewards - mean) / (std + eps)` broadcasts correctly. Choose `eps = 1e-8` to handle zero-variance rows (all rewards identical in a group).",
+    "Full solution: `mean = np.mean(rewards, axis=1, keepdims=True); std = np.std(rewards, axis=1, keepdims=True); return (rewards - mean) / (std + 1e-8)`. Zero-variance rows produce std=0 and the eps prevents division by zero, returning all-zero advantages for that group.",
+  ]}
+  solutionCode={`import numpy as np
+
+def group_normalized_advantages(rewards: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """
+    rewards: np.ndarray of shape (B, G) — B prompts, G sampled responses each
+    Returns: np.ndarray of shape (B, G) — per-group normalized advantages
+    """
+    mean = np.mean(rewards, axis=1, keepdims=True)   # (B, 1)
+    std  = np.std(rewards,  axis=1, keepdims=True)   # (B, 1)
+    return (rewards - mean) / (std + eps)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def group_normalized_advantages(rewards: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """
+    rewards: np.ndarray of shape (B, G)
+    Returns: np.ndarray of shape (B, G) — per-group normalized advantages
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity check
+rewards = np.array([[1.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0]])
+adv = group_normalized_advantages(rewards)
+if adv is not None:
+    print("advantages:", adv)
+    print("row means:", adv.mean(axis=1))
+    print("row stds: ", adv.std(axis=1))
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def group_normalized_advantages(rewards: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    mean = np.mean(rewards, axis=1, keepdims=True)
+    std  = np.std(rewards,  axis=1, keepdims=True)
+    return (rewards - mean) / (std + eps)
+`}
+  testCode={`import numpy as np
+
+def group_normalized_advantages(rewards: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    mean = np.mean(rewards, axis=1, keepdims=True)
+    std  = np.std(rewards,  axis=1, keepdims=True)
+    return (rewards - mean) / (std + eps)
+
+# Test 1: output shape matches input shape
+rewards = np.random.default_rng(0).random((4, 8))
+adv = group_normalized_advantages(rewards)
+assert adv.shape == (4, 8), f"Expected shape (4,8), got {adv.shape}"
+
+# Test 2: each row has mean ≈ 0
+rewards2 = np.array([[1.0, 0.0, 1.0, 0.0],
+                     [0.5, 0.5, 0.5, 0.5],
+                     [1.0, 0.0, 0.0, 1.0]])
+adv2 = group_normalized_advantages(rewards2)
+row_means = adv2.mean(axis=1)
+assert np.allclose(row_means, 0.0, atol=1e-6), f"Row means not near 0: {row_means}"
+
+# Test 3: non-zero-variance rows have std ≈ 1
+non_zero_mask = np.array([True, False, True])  # row 1 is all-same
+row_stds = adv2.std(axis=1)
+assert np.allclose(row_stds[non_zero_mask], 1.0, atol=1e-6), f"Row stds not near 1: {row_stds}"
+
+# Test 4: zero-variance row (all rewards equal) is handled gracefully — no NaN/Inf
+zero_var = np.array([[0.5, 0.5, 0.5, 0.5]])
+adv_zero = group_normalized_advantages(zero_var)
+assert not np.any(np.isnan(adv_zero)), "NaN in zero-variance row"
+assert not np.any(np.isinf(adv_zero)), "Inf in zero-variance row"
+
+# Test 5: simple values — correct numeric output
+simple = np.array([[0.0, 1.0]])
+adv_simple = group_normalized_advantages(simple)
+# mean=0.5, std=0.5, so advantages should be [-1, 1] approximately
+assert adv_simple[0, 0] < 0, "Lower reward should give negative advantage"
+assert adv_simple[0, 1] > 0, "Higher reward should give positive advantage"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the group-normalized advantages computation, what is the purpose of adding eps (1e-8) to the standard deviation before dividing?", options: [
+    { text: "It prevents division by zero when all responses in a group receive the same reward (zero variance). In such cases the group provides no relative signal — every response is equally good or bad — and the eps ensures the advantage is near-zero rather than NaN, gracefully encoding the absence of contrast.", correct: true, explain: "If all G responses get reward 1 (all correct) or all get reward 0 (all wrong), std=0 and the division would produce NaN or Inf without eps. Near-zero advantages are the right behavior: when every response in the group is equally rewarded, no response deserves a stronger update than any other. The eps makes this numerically safe." },
+    { text: "The eps term adds a small exploration bonus to every advantage, encouraging the policy to try responses with slightly different lengths even when rewards are identical.", correct: false, explain: "Adding eps to the denominator does not create an exploration bonus. The numerator (r_i - mean) is still zero when all rewards are equal, so the advantage remains near-zero regardless of eps. Exploration is handled by sampling temperature and other mechanisms, not by the normalization epsilon." },
+    { text: "The eps compensates for floating-point rounding errors that accumulate when computing the mean and std over large groups, ensuring numerical precision on GPU hardware.", correct: false, explain: "While eps does provide a small numerical safety margin, its primary purpose is handling exactly-zero variance (all-same rewards), not generic floating-point precision. A value of 1e-8 is far too large to be meaningful for typical floating-point rounding errors." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2501.12948.pdf" title="DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (DeepSeek-AI, 2025)" />
+
+Suggested reading order: §1 (Introduction — motivation and comparison to SFT-first approaches) → §2 (Approach / GRPO — algorithm details and reward design) → §2.2.2 (Self-Evolution Process — emergent length growth and aha-moment analysis).
+
+</StageSection>
