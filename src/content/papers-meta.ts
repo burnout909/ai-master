@@ -52,7 +52,7 @@ export const PAPERS_META: PaperMeta[] = [
   { slug: "constitutional", title: "Constitutional AI: Harmlessness from AI Feedback", authors: "Bai et al.", year: 2022, era: "alignment", arxivId: "2212.08073", summary: "Self-critique against a written constitution.", status: "implemented", influencedBy: ["instructgpt"] },
 
   // ——— Reasoning & Agents ———
-  { slug: "cot",         title: "Chain-of-Thought Prompting Elicits Reasoning", authors: "Wei et al.", year: 2022, era: "agents", arxivId: "2201.11903", summary: "Step-by-step prompting improves reasoning.", status: "stub", influencedBy: ["gpt3"] },
+  { slug: "cot",         title: "Chain-of-Thought Prompting Elicits Reasoning", authors: "Wei et al.", year: 2022, era: "agents", arxivId: "2201.11903", summary: "Step-by-step prompting improves reasoning.", status: "implemented", influencedBy: ["gpt3"] },
   { slug: "react",       title: "ReAct: Synergizing Reasoning and Acting in Language Models", authors: "Yao et al.", year: 2022, era: "agents", arxivId: "2210.03629", summary: "Interleaved thought/act/observe loop.", status: "implemented", influencedBy: ["cot"] },
   { slug: "toolformer",  title: "Toolformer: Language Models Can Teach Themselves to Use Tools", authors: "Schick et al.", year: 2023, era: "agents", arxivId: "2302.04761", summary: "Self-supervised tool-use training.", status: "stub", influencedBy: ["react"] },
   { slug: "reflexion",   title: "Reflexion: Language Agents with Verbal Reinforcement Learning", authors: "Shinn et al.", year: 2023, era: "agents", arxivId: "2303.11366", summary: "Self-reflection improves agent performance.", status: "stub", influencedBy: ["react"] },

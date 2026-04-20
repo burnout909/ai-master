@@ -1,0 +1,275 @@
+---
+slug: cot
+title: "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
+authors: "Wei, Wang, Schuurmans, Bosma, Ichter, Xia, Chi, Le, Zhou"
+year: 2022
+era: agents
+arxivId: "2201.11903"
+estimatedMinutes: 40
+prerequisites: ["gpt3"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { CotPrompt } from "../../components/widgets/CotPrompt.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+By 2022 large language models like GPT-3 had shown impressive in-context learning on many tasks. But on multi-step arithmetic and commonsense reasoning benchmarks, even a 540B-parameter model would fail by jumping straight to a wrong answer. Fine-tuning helped little: the bottleneck was not knowledge but the inability to *decompose* hard problems into smaller steps. Simply scaling up further did not fix this — at 540B params, GSM8K accuracy with standard prompting sat around 18%.
+
+Chain-of-Thought (CoT) prompting changes the prompt format rather than the model weights. Instead of showing the model `(question, answer)` pairs in the few-shot prompt, you show `(question, reasoning steps, answer)` triplets. The model then imitates this format on the query — first writing a chain of reasoning, then writing the final answer. That single format change pushed GSM8K accuracy from ~18% to ~57% on PaLM 540B. Remarkably, it only helps at roughly 60B+ parameters; smaller models produce incoherent chains that hurt accuracy.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: when you toggle Chain-of-Thought on for the apples problem, what do you expect to see differently in the output? Will the answer change, and if so, why?">
+  With CoT on, the model first writes out each arithmetic step before giving the final answer. The direct-answer path skips the decomposition and lands on the wrong number. The reasoning path forces each sub-computation to be explicit and checkable — errors in one step are easier to catch because they are visible. This is why CoT helps: it converts a single hard compositional inference into a sequence of simpler local ones.
+</PredictThenReveal>
+
+**Interact with the widget:** select a problem from the dropdown, then toggle Chain-of-Thought on and off. Observe that the direct answer is wrong while the reasoning chain produces the correct result. Try all three problems to see that the pattern holds across different arithmetic structures.
+
+<CotPrompt client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: if CoT prompting works by imitating the exemplar format, what would happen if you added 'Let's think step by step.' to the prompt but without any reasoning exemplars? Would it still help?">
+  Yes — this is zero-shot CoT (Kojima et al., 2022). Appending the phrase "Let's think step by step." to the query, without any few-shot examples at all, elicits a reasoning chain from the model. It achieves roughly 3× the accuracy of standard zero-shot prompting on arithmetic benchmarks. The phrase acts as a trigger that activates the model's latent chain-of-thought generation capability — capability that only emerges at large scale.
+</PredictThenReveal>
+
+<SrsCard id="cot-core-insight" paper="cot" prompt="What exactly changes in the prompt when you switch from standard few-shot prompting to chain-of-thought prompting, and what accuracy improvement did it produce on GSM8K at 540B params?" answer="Each few-shot exemplar gains an explicit reasoning chain between the question and the answer: (Q, reasoning, A) instead of (Q, A). On GSM8K with PaLM 540B, accuracy rose from ~18% (standard) to ~57% (CoT) — a 3× improvement from a pure prompt format change with no weight updates." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Chain-of-Thought prompting requires modifying model weights via fine-tuning to inject the reasoning capability. True or false?", options: [
+    { text: "False. CoT prompting is a pure inference-time technique — the few-shot exemplars in the prompt include reasoning chains, and the model imitates this format without any gradient updates to the weights.", correct: true, explain: "This is the key practical appeal of CoT: it works with a frozen model. You only change the format of the few-shot examples. No fine-tuning or RLHF is required, which makes it trivially applicable to any sufficiently large model via its API." },
+    { text: "True. The model is fine-tuned on a dataset of (question, reasoning, answer) triplets before CoT prompting is applied at inference time.", correct: false, explain: "Fine-tuning on chain-of-thought data is a separate (later) technique, sometimes called 'distillation'. The Wei et al. paper studies CoT as a pure prompting method: same frozen weights, different prompt format." },
+    { text: "True. CoT prompting requires a special adapter layer trained to produce intermediate reasoning tokens before the final answer token.", correct: false, explain: "No adapter layer is involved. CoT prompting uses standard autoregressive generation on the same model. The only change is the format of the few-shot context provided in the prompt." },
+  ]},
+  { prompt: "CoT prompting was found to help across all model sizes. True or false?", options: [
+    { text: "False. CoT prompting is an emergent phenomenon: it helps only at roughly 60B+ parameters. Below that threshold, the generated reasoning chains are often incoherent and CoT either provides no benefit or actively hurts accuracy.", correct: true, explain: "This is a central finding of the paper. CoT requires the model to produce coherent multi-step logical text, which is a compositional capability that only emerges at scale. Smaller models do not have this capability, so asking them to reason step by step produces fluent-sounding but wrong chains, which mislead the answer extraction." },
+    { text: "True. CoT provides consistent gains regardless of model size because even small models can copy the exemplar format.", correct: false, explain: "Small models can copy the surface format (writing something in the blank between question and answer) but they cannot produce coherent logical reasoning. The format alone is not enough — the content of the reasoning must be correct for CoT to help." },
+    { text: "False. CoT helps only at models larger than 100B parameters; at 60B it provides negligible improvement.", correct: false, explain: "The paper reports benefits starting around 60B (e.g., PaLM 62B), though gains grow substantially at 540B. The exact threshold varies by task, but 100B as the lower bound is not what the paper reports." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Standard few-shot prompting maximizes the probability of the answer directly:
+
+<Math display expr="p_\theta(a \mid x)" />
+
+where `x` is the question and `a` is the answer. Chain-of-thought prompting instead factors generation through an intermediate reasoning chain `r`:
+
+<Math display expr="p_\theta(a \mid x) = \sum_r p_\theta(a \mid r,\, x)\; p_\theta(r \mid x)" />
+
+In practice the model generates a single high-probability chain `r*` (greedy or beam search), then extracts the answer:
+
+<Math display expr="\hat{a} = \arg\max_a\; p_\theta\!\left(a \mid r^*, x\right), \quad r^* = \arg\max_r\; p_\theta(r \mid x)" />
+
+The reasoning chain `r*` decomposes the hard compositional problem into a sequence of simpler local steps, each of which is individually more tractable for the model. In the marginal `p(a | r*, x)`, the answer is now conditioned on a context that has already resolved the intermediate quantities.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does chain-of-thought prompting only help at large model scale (≥60B params) rather than all sizes?",
+    options: [
+      { text: "Producing a correct reasoning chain r* requires the model to generate coherent multi-step logical text. This compositional generation capability only emerges at large scale. Smaller models produce fluent-sounding but logically inconsistent chains that propagate errors into the answer, making CoT harmful or neutral compared to direct prompting.", correct: true, explain: "The mathematical picture clarifies the risk: if r* is wrong (e.g., contains an arithmetic error), then p(a | r*, x) is conditioned on a false context and the final answer is likely wrong too. CoT adds value only when the model is capable enough to generate r* with high accuracy, which requires large-scale compositional language modeling." },
+      { text: "Large models have been pretrained on more chain-of-thought examples scraped from the web, so they directly recall the reasoning chains at inference time rather than generating them.", correct: false, explain: "While large models do see diverse web data, the chain-of-thought capability is not explained purely as memorization of specific chains. The paper shows CoT generalizes to novel problems not seen during pretraining. The capability is compositional generation, not retrieval." },
+      { text: "Small models have shorter context windows and cannot fit the few-shot exemplars plus the reasoning chain in a single forward pass.", correct: false, explain: "Context window length is not the limiting factor — even small models with sufficient context still fail with CoT. The limitation is the model's ability to generate logically coherent intermediate text, not whether the exemplars fit." },
+    ],
+  }}
+  revealExpr="r^* \text{ coherent} \Rightarrow p(a \mid r^*, x) \text{ high} \quad \text{(requires scale)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Zero-shot CoT appends 'Let's think step by step.' to the prompt without any few-shot examples. In the probability factorization above, what role does this phrase play?",
+    options: [
+      { text: "The phrase acts as a prompt trigger that shifts the model's generation distribution toward producing a reasoning chain r before the answer, without requiring any (question, reasoning, answer) exemplars. It elicits the latent chain-of-thought capability using a single natural language instruction.", correct: true, explain: "In the factorization p(a | x) = sum_r p(a | r, x) p(r | x), zero-shot CoT increases the weight on long, structured reasoning chains in p(r | x) by priming the model with an instruction that coherent multi-step text is expected. The model's pretraining has exposed it to contexts where 'Let's think step by step' precedes structured reasoning, so this phrase shifts the distribution." },
+      { text: "The phrase acts as a separator token that forces the model to attend to the question separately from the answer extraction step, similar to a [SEP] token in BERT.", correct: false, explain: "No special separator token mechanism is involved. The model is a standard decoder-only LM. The phrase works through the model's language modeling distribution — it primes the model to produce the kind of text that typically follows this phrase in its training data." },
+      { text: "Zero-shot CoT is equivalent to standard zero-shot prompting; the phrase 'Let's think step by step' has no measurable effect on accuracy.", correct: false, explain: "The paper reports roughly 3× accuracy improvement on arithmetic benchmarks when this phrase is appended, compared to standard zero-shot. It is measurably effective, particularly at large model scale." },
+    ],
+  }}
+  revealExpr="\text{'Let's think step by step'} \Rightarrow p(r \mid x) \text{ shifts toward structured chains}"
+/>
+
+<SrsCard id="cot-factorization" paper="cot" prompt="Write the probability factorization that distinguishes chain-of-thought prompting from direct-answer prompting. What term appears in CoT that is absent in direct prompting?" answer="Direct: p(a | x). CoT: p(a | x) = sum_r p(a | r, x) * p(r | x). The new term is p(r | x) — the probability of a reasoning chain given the question. At inference time the model generates the MAP chain r* = argmax p(r|x), then reads off the answer from p(a | r*, x)." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the chain-of-thought factorization, the answer probability is conditioned on the reasoning chain r*. What is the consequence if r* contains a factual error?", options: [
+    { text: "The final answer p(a | r*, x) is conditioned on an incorrect intermediate context. The model is likely to produce an answer consistent with the wrong chain, so the error in r* propagates directly into the final answer.", correct: true, explain: "This is the Achilles heel of CoT: error propagation along the chain. Each step in r* is a new conditioning context for the subsequent steps and the final answer. A single wrong arithmetic sub-result partway through the chain will typically cause all subsequent steps to be wrong as well. This motivates later work like self-consistency (majority voting over many sampled chains) to reduce the impact of any single incorrect chain." },
+    { text: "The model ignores r* and falls back to direct-answer mode, so an error in r* has no effect on the final answer.", correct: false, explain: "There is no such fallback mechanism. The model is a standard autoregressive LM that reads the generated chain as part of its context. An error in r* is treated as ground truth by the model when generating the answer." },
+    { text: "An error in r* increases the entropy of p(a | r*, x) but the MAP answer is still likely to be correct because the model averages over all possible reasoning paths.", correct: false, explain: "The model does not average over all paths at inference time with standard greedy/beam decoding — it decodes a single chain r*. The summation over r in the mathematical formulation is an expectation; in practice the model commits to one chain. Only self-consistency methods explicitly average over multiple sampled chains." },
+  ]},
+  { prompt: "Standard few-shot prompting and CoT prompting both use k exemplars in the context. What is the key structural difference between the exemplars?", options: [
+    { text: "Standard few-shot exemplars are (question, answer) pairs. CoT exemplars are (question, reasoning steps, answer) triples — the reasoning steps between question and answer are the only structural addition.", correct: true, explain: "The reasoning steps are the entire intervention. Nothing else changes: the same number of exemplars, the same model, the same decoding algorithm. This is what makes CoT so elegant — a pure prompting change with no fine-tuning, model modification, or additional inference cost beyond generating more tokens." },
+    { text: "CoT exemplars include the question multiple times — once at the start and once just before the answer — to force the model to re-read the question after completing the reasoning.", correct: false, explain: "There is no question duplication in CoT exemplars. The structure is simply: state the question, write the reasoning, give the answer. The model does not need the question repeated because it attends to all prior tokens during generation." },
+    { text: "CoT exemplars use a larger number of shots (k) than standard few-shot prompting, providing more in-context data to compensate for the added complexity of the reasoning format.", correct: false, explain: "The paper uses the same k for both conditions when comparing them. The performance difference comes from the reasoning format in each exemplar, not from a larger k. Using more shots does help in general, but it is an orthogonal variable." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the four steps of chain-of-thought inference in the correct order:
+
+<LineReorder client:load lines={[
+  "Construct k-shot prompt with (question, reasoning, answer) exemplars",
+  "Append the query question to the prompt",
+  "LM generates the reasoning chain, then the final answer",
+  "Extract the final numeric or text answer from the generation",
+]} />
+
+Fill in the blank — the key suffix that triggers zero-shot chain-of-thought:
+
+```text
+def zero_shot_cot(query, model):
+    prompt = query + "\n" + _______
+    return model.generate(prompt)
+```
+
+<FillBlank answer="Let's think step by step." client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pseudo code above, the answer is extracted from the generation after the reasoning chain. Why is answer extraction a non-trivial step in practice?", options: [
+    { text: "The model's generation contains both the reasoning chain and the final answer in free-form text. The answer must be extracted by finding a pattern (e.g., 'The answer is ...', the last number, or a delimiter). Errors in extraction can cause a correct reasoning chain to yield a wrong reported answer.", correct: true, explain: "This is a genuine engineering concern in CoT systems. Common extraction heuristics include: take the last number in the generated text, look for 'The answer is X', or use a second LLM call to extract. The paper uses simple regex-based extraction for numeric answers, which can fail on edge cases like negative numbers or fractions." },
+    { text: "Answer extraction is trivial because the model always terminates generation with a special [ANSWER] token that marks the final answer location.", correct: false, explain: "Standard autoregressive LMs do not have a built-in [ANSWER] token in the CoT setting. The answer format is free-form and must be extracted by heuristics. A special token would require fine-tuning to introduce." },
+    { text: "Answer extraction is not needed because the first token the model generates after the prompt is always the final answer.", correct: false, explain: "With CoT, the model generates the reasoning chain first and the answer last — the opposite of this claim. The answer is at the end of the generation, not the beginning." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a **few-shot CoT prompt builder**. Given a list of examples (each a dict with `"question"`, `"reasoning"`, and `"answer"` keys) and a `query` string, return the full prompt string. Each exemplar should be formatted as:
+
+```
+Q: <question>
+A: <reasoning> The answer is <answer>.
+```
+
+followed by `Q: <query>\nA:` at the end to elicit the model's completion.
+
+<HintFade client:load
+  hints={[
+    "Iterate over the examples list and format each one as 'Q: {question}\\nA: {reasoning} The answer is {answer}.' then join them with newlines.",
+    "After all exemplars, append the query as 'Q: {query}\\nA:' — the trailing 'A:' is the generation prompt that tells the model to start its response.",
+    "Full solution: join each exemplar with '\\n\\n' for readability, then add '\\n\\n' + query line at the end. Return the whole string.",
+  ]}
+  solutionCode={`def build_cot_prompt(examples, query):
+    """
+    examples: list of dicts with keys 'question', 'reasoning', 'answer'
+    query: str — the new question to answer
+    Returns: str — the full few-shot CoT prompt
+    """
+    parts = []
+    for ex in examples:
+        parts.append(
+            f"Q: {ex['question']}\\n"
+            f"A: {ex['reasoning']} The answer is {ex['answer']}."
+        )
+    parts.append(f"Q: {query}\\nA:")
+    return "\\n\\n".join(parts)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`def build_cot_prompt(examples, query):
+    """
+    examples: list of dicts with keys 'question', 'reasoning', 'answer'
+    query: str — the new question to answer
+    Returns: str — the full few-shot CoT prompt
+    """
+    # TODO: implement
+    pass
+
+# Sanity check
+examples = [
+    {"question": "5 + 3 = ?", "reasoning": "5 plus 3 equals 8.", "answer": "8"},
+    {"question": "10 - 4 = ?", "reasoning": "10 minus 4 equals 6.", "answer": "6"},
+]
+query = "7 * 2 = ?"
+result = build_cot_prompt(examples, query)
+if result is not None:
+    print(result)
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`def build_cot_prompt(examples, query):
+    parts = []
+    for ex in examples:
+        parts.append(
+            f"Q: {ex['question']}\\n"
+            f"A: {ex['reasoning']} The answer is {ex['answer']}."
+        )
+    parts.append(f"Q: {query}\\nA:")
+    return "\\n\\n".join(parts)
+`}
+  testCode={`def build_cot_prompt(examples, query):
+    parts = []
+    for ex in examples:
+        parts.append(
+            f"Q: {ex['question']}\\n"
+            f"A: {ex['reasoning']} The answer is {ex['answer']}."
+        )
+    parts.append(f"Q: {query}\\nA:")
+    return "\\n\\n".join(parts)
+
+examples = [
+    {"question": "5 + 3 = ?", "reasoning": "5 plus 3 equals 8.", "answer": "8"},
+    {"question": "10 - 4 = ?", "reasoning": "10 minus 4 equals 6.", "answer": "6"},
+]
+query = "7 * 2 = ?"
+prompt = build_cot_prompt(examples, query)
+
+# Test 1: output contains all example questions
+for ex in examples:
+    assert ex["question"] in prompt, f"Question '{ex['question']}' not found in prompt"
+
+# Test 2: output ends with the query followed by 'A:'
+assert prompt.endswith(f"Q: {query}\\nA:"), f"Prompt should end with 'Q: {query}\\nA:', got: {repr(prompt[-50:])}"
+
+# Test 3: length grows with number of exemplars
+examples_1 = examples[:1]
+examples_2 = examples[:2]
+prompt_1 = build_cot_prompt(examples_1, query)
+prompt_2 = build_cot_prompt(examples_2, query)
+assert len(prompt_2) > len(prompt_1), "Prompt with 2 exemplars should be longer than with 1"
+
+# Test 4: reasoning appears in output
+for ex in examples:
+    assert ex["reasoning"] in prompt, f"Reasoning '{ex['reasoning']}' not found in prompt"
+
+# Test 5: 'The answer is' appears once per exemplar
+assert prompt.count("The answer is") == len(examples), f"Expected {len(examples)} 'The answer is' occurrences, got {prompt.count('The answer is')}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the prompt builder above, the final line ends with 'A:' and nothing else. Why is this specific ending important for eliciting a chain-of-thought response from the model?", options: [
+    { text: "The trailing 'A:' is a generation prompt: it tells the autoregressive model that it should now produce the assistant's turn. The model continues from this prefix, and because all prior exemplars in the context follow 'A:' with a reasoning chain and then an answer, the model imitates this format for the query too.", correct: true, explain: "This is how few-shot prompting works in general: the model sees a pattern in the context and continues it. By ending with 'Q: {query}\\nA:', we tell the model 'you are the assistant; your turn begins here'. The prior (question, reasoning, answer) exemplars in the context act as demonstrations of the format it should use." },
+    { text: "The 'A:' prefix is a special token that bypasses the model's safety filters and forces chain-of-thought generation regardless of the question content.", correct: false, explain: "'A:' is just a plain text string — two characters. It has no special token status. Its effect is purely through in-context learning: the model has seen 'A:' followed by reasoning text in the context and continues that pattern." },
+    { text: "Without the trailing 'A:', the model would generate a new question (continuing the Q/A alternating pattern) instead of an answer.", correct: false, explain: "While there is some logic to this concern, in practice the model's generation is primarily shaped by the pattern of the exemplars, not by strict alternation. The 'A:' ending is best understood as a helpful disambiguation signal rather than the only way to elicit an answer." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2201.11903.pdf" title="Chain-of-Thought Prompting Elicits Reasoning in Large Language Models (Wei et al. 2022)" />
+
+Suggested reading order: §1 (Introduction — the GSM8K motivation and the core claim) → §3 (Chain-of-Thought Prompting — the method, exemplar format, and zero-shot CoT) → §4 (Arithmetic Reasoning — benchmark results, scaling curve, and emergent behavior at large model size).
+
+</StageSection>
