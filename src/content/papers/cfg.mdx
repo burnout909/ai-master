@@ -1,0 +1,254 @@
+---
+slug: cfg
+title: "Classifier-Free Diffusion Guidance"
+authors: "Ho, Salimans"
+year: 2022
+era: generative
+arxivId: "2207.12598"
+estimatedMinutes: 40
+prerequisites: ["ddpm"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { GuidanceScale } from "../../components/widgets/GuidanceScale.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+DDPM and LDM showed that diffusion models can generate stunning images. But left unconditioned, they sample from the full data distribution — there is no way to say "generate a photo of a red fox in snow." Conditioning on a text prompt or class label is essential. The obvious approach: train an **auxiliary classifier** on noisy images at every noise level t, and at inference time use its gradient to steer the denoising trajectory toward the desired class. This is **classifier guidance** (Dhariwal and Nichol, 2021). It works — but it requires training a second model (the noisy-image classifier), which is expensive and tightly coupled to the specific noise schedule of the diffusion model.
+
+Ho and Salimans (2022) asked: can we guide without any classifier at all? The answer is yes. The key insight: **a single model can implicitly encode both a conditional score and an unconditional score**. During training, the conditioning signal c (e.g. a class label or text embedding) is randomly replaced with a null token **∅** with probability p_uncond (typically ~10%). The network learns to denoise with the condition when it is present, and without it when it is absent. At inference time, you run the network twice per denoising step — once with c and once with ∅ — then combine the two noise predictions with a guidance weight w. Cranking up w trades diversity for sharpness: the generated distribution shrinks toward the conditional mode.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if w=0 in the CFG formula, what do you expect the guided distribution to look like compared to the conditional and unconditional distributions?">
+  At w=0 the formula reduces to the pure conditional noise prediction — the guided distribution is exactly the conditional distribution. There is no extrapolation away from it; the unconditional prediction is multiplied by zero and cancels out entirely.
+</PredictThenReveal>
+
+**Interact with the widget:** drag the guidance scale slider from 0 to 10. The orange curve is the guided density. Toggle "Show both source distributions" to reveal the conditional (blue, narrower peak) and unconditional (grey, wider and shifted left). Watch how increasing w sharpens the orange curve and pulls its mode toward the conditional mode.
+
+<GuidanceScale client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget at high w (e.g. w=10): the mode of the guided distribution moves past the conditional mode and the tails narrow dramatically. What does this tell you about the cost of very high guidance?">
+  Very high guidance extrapolates aggressively along the direction from the unconditional mode to the conditional mode, moving the effective sample distribution beyond the conditional mode itself. This sharpens the density (reducing diversity) but can push samples into low-probability regions of the true data distribution — causing artifacts or over-saturated, mode-collapsed outputs. In practice w=7.5 is a common sweet spot for text-to-image models.
+</PredictThenReveal>
+
+<SrsCard id="cfg-intuition" paper="cfg" prompt="What is the core trick that lets CFG avoid training a separate classifier?" answer="During training, the conditioning signal c is randomly replaced with a null token ∅ with probability ~10%. The network thereby learns both a conditional score (when c is present) and an unconditional score (when c=∅). At inference, running the network twice and linearly extrapolating from the unconditional toward the conditional prediction implements guidance with no auxiliary model." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What practical problem does Classifier-Free Guidance solve compared to classifier guidance?", options: [
+    { text: "CFG eliminates the need to train a separate noisy-image classifier, requiring only one model that learns both conditional and unconditional scores during a single training run", correct: true, explain: "Classifier guidance requires a dedicated classifier trained on noisy images at all noise levels, which must be re-trained whenever the noise schedule or architecture changes. CFG bakes both signals into one network by randomly dropping the condition during training." },
+    { text: "CFG produces strictly higher FID scores at every guidance weight, making it superior in all cases", correct: false, explain: "CFG and classifier guidance can achieve similar FID vs. IS tradeoffs; the advantage of CFG is primarily simplicity and not requiring a second model. At very high guidance weights CFG can actually produce artifacts." },
+    { text: "CFG removes the need for any conditioning signal, allowing unconditional generation with better diversity", correct: false, explain: "CFG still uses a conditioning signal c. The 'classifier-free' part means there is no separate classifier — not that conditioning is absent. The null token ∅ enables the unconditional branch that is mixed with the conditional branch at inference." },
+  ]},
+  { prompt: "During CFG training, why is the condition c randomly replaced with ∅ rather than simply training two separate models?", options: [
+    { text: "Sharing weights between the conditional and unconditional branches means the model internally learns the relationship between p(x) and p(x|c), which makes the guidance direction more coherent at inference time", correct: true, explain: "When one network learns both branches simultaneously, the representations are aligned: the difference between the conditional and unconditional noise predictions directly captures the gradient of log p(c|x) without ever computing it explicitly. Separate models would not share this aligned representation." },
+    { text: "Training two separate models would violate the Markov property of the diffusion forward process", correct: false, explain: "The Markov property of the forward process is independent of how many models are trained. Training two separate models is technically feasible — it is just more expensive and produces less coherent guidance vectors." },
+    { text: "The null token ∅ acts as a special class label that forces the model to memorise the training data distribution exactly", correct: false, explain: "∅ is a dropout mechanism for the conditioning signal, not a memorization trigger. It tells the network 'ignore any conditioning information and predict the unconditional noise,' allowing the model to learn the marginal distribution p(x)." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The CFG inference formula combines the conditional and unconditional noise predictions with guidance weight w:
+
+<Math display expr="\tilde{\varepsilon}_\theta(x_t, c) = (1 + w)\,\varepsilon_\theta(x_t, c) - w\,\varepsilon_\theta(x_t, \varnothing)" />
+
+In score-function form this is equivalent to:
+
+<Math display expr="\nabla \log \tilde{p}(x \mid c) = (1+w)\,\nabla \log p(x \mid c) - w\,\nabla \log p(x)" />
+
+The formula linearly extrapolates from the unconditional score toward the conditional score. When w=0 you recover the pure conditional score. When w=1 you get 2*conditional - 1*unconditional, pushing further toward the conditional mode. The training loss is the standard DDPM objective applied jointly:
+
+<Math display expr="\mathcal{L} = \mathbb{E}_{x_0, c, \varepsilon, t}\!\left[\|\varepsilon - \varepsilon_\theta(x_t, c_{\text{drop}})\|^2\right]" />
+
+where c_drop equals c with probability (1 - p_uncond) and equals ∅ with probability p_uncond. The network sees both branches during training and learns to handle both. This is the entire training change — no new loss terms, no new model.
+
+<DerivationStep client:load
+  question={{
+    prompt: "At w=0, what does the CFG formula ε̃ = (1+w)ε(x_t,c) - w·ε(x_t,∅) reduce to?",
+    options: [
+      { text: "ε̃ = ε_θ(x_t, c) — pure conditional prediction, identical to standard conditional diffusion sampling with no guidance boost", correct: true, explain: "Substituting w=0: (1+0)·ε(x_t,c) - 0·ε(x_t,∅) = ε(x_t,c). The unconditional branch completely vanishes. There is no extrapolation; the model samples from the trained conditional distribution exactly. Guidance only activates for w>0." },
+      { text: "ε̃ = ε_θ(x_t, ∅) — pure unconditional prediction, because the condition is zeroed out", correct: false, explain: "At w=0 the coefficient of the conditional term is (1+0)=1 and the coefficient of the unconditional term is -0=0. The conditional branch dominates, not the unconditional." },
+      { text: "ε̃ = 0.5·ε(x_t,c) + 0.5·ε(x_t,∅) — an equal mix of conditional and unconditional", correct: false, explain: "Equal mixing would require setting the coefficients to 0.5 and 0.5, which corresponds to w=-0.5 — a negative guidance weight. At w=0 the formula gives exactly the conditional prediction." },
+    ],
+  }}
+  revealExpr="\tilde{\varepsilon}_\theta\big|_{w=0} = (1+0)\,\varepsilon_\theta(x_t, c) - 0\cdot\varepsilon_\theta(x_t,\varnothing) = \varepsilon_\theta(x_t, c)"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does increasing w beyond 0 sharpen the guided distribution toward the conditional mode?",
+    options: [
+      { text: "The formula extrapolates in the direction from the unconditional prediction to the conditional prediction — moving further along that vector pushes probability mass toward the conditional mode and away from low-likelihood regions under p(x|c)", correct: true, explain: "Write the formula as ε_cond + w*(ε_cond - ε_uncond). The term w*(ε_cond - ε_uncond) is a correction vector pointing from the unconditional to the conditional noise prediction. Scaling it by w amplifies the push toward the conditional score, effectively raising the temperature of p(c|x) in the sampling distribution." },
+      { text: "Larger w reduces the noise schedule step size, giving the denoiser more time to correct toward the conditioning signal", correct: false, explain: "CFG does not change the noise schedule or the step size. It operates entirely within a single denoising step by modifying the predicted noise — the schedule T, alpha_bar_t, and sigma_t all remain unchanged." },
+      { text: "At higher w the null token ∅ is replaced with c more often during inference, increasing the effective conditioning probability", correct: false, explain: "The null token dropout only happens during training. At inference the model is always called with both c (explicitly) and ∅ (explicitly) for every step — the dropout probability p_uncond is a training hyperparameter, not an inference parameter." },
+    ],
+  }}
+  revealExpr="\tilde{\varepsilon} = \varepsilon_\theta(x_t, c) + w\,\underbrace{(\varepsilon_\theta(x_t, c) - \varepsilon_\theta(x_t, \varnothing))}_{\text{guidance direction: } \nabla\log p(c \mid x_t)}"
+/>
+
+<SrsCard id="cfg-formula" paper="cfg" prompt="Write the CFG noise prediction formula and identify what each term does." answer="ε̃(x_t,c) = (1+w)·ε_θ(x_t,c) - w·ε_θ(x_t,∅). The first term is the scaled conditional prediction; the second subtracts the unconditional prediction scaled by w. Together they extrapolate along the direction from unconditional to conditional, amplifying the conditioning effect. w=0 gives pure conditional; w>0 sharpens toward the conditional mode at the cost of diversity." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the CFG score form ∇log p̃(x|c) = (1+w)∇log p(x|c) - w∇log p(x), what does the expression simplify to after collecting terms?", options: [
+    { text: "∇log p(x|c) + w·(∇log p(x|c) - ∇log p(x)) = ∇log p(x|c) + w·∇log p(c|x) by Bayes' rule — the guidance adds a scaled classifier gradient without using a classifier", correct: true, explain: "Distributing: (1+w)∇log p(x|c) - w∇log p(x) = ∇log p(x|c) + w·[∇log p(x|c) - ∇log p(x)]. By Bayes, log p(x|c) - log p(x) = log p(c|x) + const, so the guidance term is exactly w·∇log p(c|x) — a classifier gradient computed implicitly." },
+    { text: "The expression cannot be simplified further because ∇log p(x|c) and ∇log p(x) point in arbitrary directions", correct: false, explain: "They are not arbitrary — they are the conditional and marginal score functions for the same distribution family. Bayes' theorem gives a direct algebraic relationship between them, allowing the simplification in the correct answer." },
+    { text: "It simplifies to (1+w)·∇log p(c|x) by cancelling the unconditional terms on both sides", correct: false, explain: "You cannot cancel ∇log p(x) from both terms like that. The correct algebra: collect (1+w)∇log p(x|c) - w∇log p(x) = ∇log p(x|c) + w·(∇log p(x|c) - ∇log p(x)) = ∇log p(x|c) + w·∇log p(c|x)." },
+  ]},
+  { prompt: "What is the role of p_uncond (the null-conditioning dropout probability) during CFG training?", options: [
+    { text: "It controls how often the model sees the unconditional task during training, ensuring the unconditional branch is well-trained; too low and the model forgets how to generate unconditionally, breaking the guidance at inference", correct: true, explain: "If p_uncond is too small (e.g. 1%), the network rarely trains on the ∅ condition and learns a poor unconditional score — the guidance direction ε_cond - ε_uncond becomes noisy. The paper finds p_uncond=0.1 (10%) gives a good balance." },
+    { text: "p_uncond directly equals w at inference — a higher training dropout requires a matching higher guidance scale", correct: false, explain: "p_uncond and w are independent hyperparameters. p_uncond is fixed during training; w is a free parameter at inference time that can be swept without retraining the model." },
+    { text: "p_uncond controls the fraction of the DDPM noise schedule that is trained unconditionally versus conditionally — earlier timesteps train with ∅, later timesteps train with c", correct: false, explain: "The conditioning dropout is applied independently and uniformly at random for each training example, regardless of the timestep t. All timesteps see both conditional and unconditional examples at the ratio set by p_uncond." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the four steps of a single CFG denoising step in the correct order:
+
+<LineReorder client:load lines={[
+  "Compute conditional noise prediction: e_cond = eps_theta(x_t, c)",
+  "Compute unconditional noise prediction: e_uncond = eps_theta(x_t, null)",
+  "Combine with guidance weight: e_guided = (1 + w) * e_cond - w * e_uncond",
+  "Apply standard DDPM update rule using e_guided to obtain x_{t-1}",
+]} />
+
+Fill in the blank — the CFG combination step:
+
+```text
+def cfg_combine(e_cond, e_uncond, w):
+    # e_cond, e_uncond: noise predictions, same shape
+    # w: guidance scale (>=0)
+    e_guided = ______
+    return e_guided
+```
+
+<FillBlank answer="(1 + w) * e_cond - w * e_uncond" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "During CFG inference, the model is called twice per denoising step. What are the two calls and what do they return?", options: [
+    { text: "Call 1: eps_theta(x_t, c) returns the conditional noise prediction; Call 2: eps_theta(x_t, ∅) returns the unconditional noise prediction — these are combined by the CFG formula before the DDPM update", correct: true, explain: "Both calls share the same model weights, the same noisy input x_t, and the same timestep t. They differ only in the conditioning input: c (the real prompt/label) vs. ∅ (the null/dropped token). The two outputs are then combined with weights (1+w) and -w respectively." },
+    { text: "Call 1: runs the forward diffusion process on x_0 to produce x_t; Call 2: runs the reverse denoising from x_t to x_{t-1}", correct: false, explain: "The forward process is not called during inference — x_T is sampled from N(0,I) and then only the reverse (denoising) process runs. Both model calls at each step are noise predictions (reverse process), not forward process calls." },
+    { text: "Call 1: queries the frozen classifier for ∇log p(c|x_t); Call 2: runs the diffusion U-Net to predict noise", correct: false, explain: "CFG has no classifier — that is the entire point. Both calls are to the same diffusion U-Net with different conditioning inputs. The gradient of log p(c|x_t) is recovered implicitly from their difference." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the CFG combination in NumPy. Given arrays `e_cond` and `e_uncond` (noise predictions of the same shape), and a guidance scale `w`, compute `e_guided`. Then verify that w=0 returns the conditional prediction and that w>0 shifts the result in the direction of `e_cond - e_uncond`.
+
+<HintFade client:load
+  hints={[
+    "The formula is ε̃ = (1 + w) * e_cond - w * e_uncond. Start with the simplest possible NumPy expression that directly implements this.",
+    "Rewrite as e_cond + w * (e_cond - e_uncond). This makes it clear that w scales the guidance direction vector. Both forms are equivalent — pick whichever is clearest.",
+    "Full solution: def cfg_combine(e_cond, e_uncond, w): return (1 + w) * e_cond - w * e_uncond  — one line, pure NumPy broadcasting, works for any array shape.",
+  ]}
+  solutionCode={`import numpy as np
+
+def cfg_combine(e_cond, e_uncond, w):
+    """
+    e_cond:   array of any shape — conditional noise prediction
+    e_uncond: same shape         — unconditional noise prediction
+    w:        float >= 0         — guidance scale
+    returns:  guided noise prediction, same shape
+    """
+    return (1 + w) * e_cond - w * e_uncond`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def cfg_combine(e_cond, e_uncond, w):
+    """
+    e_cond:   array — conditional noise prediction
+    e_uncond: array — unconditional noise prediction (same shape)
+    w:        float — guidance scale
+    returns:  guided noise prediction, same shape
+    """
+    # TODO: implement CFG combination
+    pass
+
+# Quick check
+np.random.seed(7)
+e_cond   = np.random.randn(4, 8)
+e_uncond = np.random.randn(4, 8)
+
+print("w=0 matches e_cond:", np.allclose(cfg_combine(e_cond, e_uncond, 0), e_cond))
+print("w=1 shape:", cfg_combine(e_cond, e_uncond, 1).shape if cfg_combine(e_cond, e_uncond, 1) is not None else "None")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def cfg_combine(e_cond, e_uncond, w):
+    return (1 + w) * e_cond - w * e_uncond
+`}
+  testCode={`import numpy as np
+
+def cfg_combine(e_cond, e_uncond, w):
+    return (1 + w) * e_cond - w * e_uncond
+
+np.random.seed(42)
+e_cond   = np.random.randn(3, 16)
+e_uncond = np.random.randn(3, 16)
+
+# Test 1: w=0 returns exactly e_cond
+result_w0 = cfg_combine(e_cond, e_uncond, 0)
+assert np.allclose(result_w0, e_cond), "w=0 should return e_cond unchanged"
+
+# Test 2: output shape matches input shape
+result_w3 = cfg_combine(e_cond, e_uncond, 3)
+assert result_w3.shape == e_cond.shape, f"Expected shape {e_cond.shape}, got {result_w3.shape}"
+
+# Test 3: w>0 shifts toward e_cond direction (result is closer to e_cond than e_uncond)
+# distance from result to e_cond vs to e_uncond
+dist_to_cond   = np.linalg.norm(result_w3 - e_cond)
+dist_to_uncond = np.linalg.norm(result_w3 - e_uncond)
+assert dist_to_cond < dist_to_uncond, "At w=3, guided result should be closer to e_cond than e_uncond"
+
+# Test 4: linear in w — doubling w doubles the deviation from e_cond
+dev_w2 = cfg_combine(e_cond, e_uncond, 2) - e_cond
+dev_w4 = cfg_combine(e_cond, e_uncond, 4) - e_cond
+assert np.allclose(dev_w4, 2 * dev_w2, atol=1e-9), "Guidance deviation should scale linearly with w"
+
+# Test 5: output is finite for all inputs
+big = np.random.randn(10, 10) * 100
+assert np.all(np.isfinite(cfg_combine(big, big * 0.9, 7.5))), "Output should be finite"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The CFG formula can be rewritten as e_guided = e_cond + w*(e_cond - e_uncond). What does the term (e_cond - e_uncond) represent geometrically?", options: [
+    { text: "The guidance direction — a vector pointing from the unconditional noise prediction toward the conditional noise prediction; scaling it by w controls how far along this direction the guided prediction moves", correct: true, explain: "In score-function terms, e_cond - e_uncond approximates ∇log p(c|x_t) (the gradient of the implicit classifier log-likelihood). Adding w times this vector to e_cond amplifies the push toward the conditional mode, equivalent to raising the power of the conditioning signal." },
+    { text: "The residual noise that was not removed by the unconditional denoiser — subtracting it cleans up the conditional prediction", correct: false, explain: "e_cond - e_uncond is a difference between two predictions for the same noisy input x_t. It does not represent unremoved noise — it represents the difference in what noise the model attributes to the sample when conditioning is present vs. absent." },
+    { text: "The covariance between the conditional and unconditional distributions at timestep t, used to align their variances before combining", correct: false, explain: "This is an elementwise vector difference, not a statistical covariance. Covariance would require expectations over many samples; here we are simply subtracting two noise predictions for a single x_t." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2207.12598.pdf" title="Classifier-Free Diffusion Guidance (Ho, Salimans 2022)" />
+
+Suggested reading order: §1 (Introduction — motivation for avoiding a classifier and the dropout trick) → §2 (Classifier-Free Guidance — the training procedure and inference formula) → §4 (Experiments — FID vs. IS tradeoff curves showing the effect of varying w).
+
+</StageSection>

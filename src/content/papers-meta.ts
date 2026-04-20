@@ -37,7 +37,7 @@ export const PAPERS_META: PaperMeta[] = [
   // ——— Generative Models ———
   { slug: "ddpm",        title: "Denoising Diffusion Probabilistic Models", authors: "Ho, Jain, Abbeel", year: 2020, era: "generative", arxivId: "2006.11239", summary: "Diffusion models as generative modeling.", status: "implemented" },
   { slug: "ldm",         title: "High-Resolution Image Synthesis with Latent Diffusion Models", authors: "Rombach et al.", year: 2022, era: "generative", arxivId: "2112.10752", summary: "Diffusion in VAE latent space; Stable Diffusion.", status: "implemented", influencedBy: ["ddpm"] },
-  { slug: "cfg",         title: "Classifier-Free Diffusion Guidance", authors: "Ho, Salimans", year: 2022, era: "generative", arxivId: "2207.12598", summary: "Conditional generation without a separate classifier.", status: "stub", influencedBy: ["ddpm"] },
+  { slug: "cfg",         title: "Classifier-Free Diffusion Guidance", authors: "Ho, Salimans", year: 2022, era: "generative", arxivId: "2207.12598", summary: "Conditional generation without a separate classifier.", status: "implemented", influencedBy: ["ddpm"] },
   { slug: "flow-matching", title: "Flow Matching for Generative Modeling", authors: "Lipman et al.", year: 2023, era: "generative", arxivId: "2210.02747", summary: "Continuous-time generative modeling via vector fields.", status: "stub", influencedBy: ["ddpm"] },
 
   // ——— Efficiency ———
