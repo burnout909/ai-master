@@ -1,0 +1,14 @@
+---
+import "../styles/global.css";
+import { ReviewDeck } from "../components/review/ReviewDeck.tsx";
+---
+<html>
+  <head><title>Review — ai_master</title></head>
+  <body class="bg-white text-neutral-900">
+    <main class="max-w-5xl mx-auto px-4 py-8">
+      <a href="/" class="text-sm text-blue-600">← Home</a>
+      <h1 class="text-3xl font-bold my-4">Today's review</h1>
+      <ReviewDeck client:only="react" />
+    </main>
+  </body>
+</html>
