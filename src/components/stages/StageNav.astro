@@ -1,0 +1,34 @@
+---
+interface Props { slug: string; }
+const { slug } = Astro.props;
+const stages = [
+  { id: "intuition", label: "① Intuition" },
+  { id: "math",      label: "② Math" },
+  { id: "pseudo",    label: "③ Pseudo code" },
+  { id: "code",      label: "④ Code" },
+  { id: "pdf",       label: "⑤ Original PDF" },
+];
+---
+<aside class="sticky top-4 w-48 hidden md:block" data-paper-slug={slug}>
+  <ol class="space-y-1 text-sm">
+    {stages.map((s) => (
+      <li>
+        <a href={`#${s.id}`} class="block px-2 py-1 rounded hover:bg-neutral-100" data-stage-id={s.id}>
+          <span class="stage-mark" data-slug={slug} data-stage={s.id}>○</span> {s.label}
+        </a>
+      </li>
+    ))}
+  </ol>
+</aside>
+<script>
+  import { getStageStatus } from "../../lib/progress";
+  const marks = document.querySelectorAll<HTMLElement>(".stage-mark");
+  marks.forEach((m) => {
+    const slug = m.dataset.slug!;
+    const stage = m.dataset.stage! as any;
+    const status = getStageStatus(slug, stage);
+    if (status === "mastered") m.textContent = "✓";
+    else if (status === "skipped") m.textContent = "✗";
+    else if (status === "revealed") m.textContent = "◐";
+  });
+</script>
