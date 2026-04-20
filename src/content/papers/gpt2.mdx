@@ -1,0 +1,232 @@
+---
+slug: gpt2
+title: "Language Models are Unsupervised Multitask Learners"
+authors: "Radford, Wu, Child, Luan, Amodei, Sutskever"
+year: 2019
+era: transformer
+estimatedMinutes: 40
+prerequisites: ["transformer"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { TemperatureSampler } from "../../components/widgets/TemperatureSampler.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before GPT-2, the standard playbook for NLP was **pretrain then fine-tune**: train a language model on unlabeled text, then add a task-specific head and supervised training for each downstream task. GPT-2's central claim is more radical: a large enough language model trained on diverse web text can perform many tasks **zero-shot** — with no gradient updates — simply by conditioning the model on a natural-language prompt that describes the task.
+
+The key ingredients are a **decoder-only Transformer** (causal, left-to-right attention), 1.5 billion parameters, and 40 GB of high-quality web text (WebText). At inference time, the task is framed as text: "Translate English to French: cheese =>" or "Q: What is the capital of France? A:". The model completes the prompt without ever seeing labeled examples.
+
+Temperature sampling is central to GPT-2's generation quality. The model outputs a logit vector over the vocabulary; dividing by temperature T before softmax sharpens (low T) or flattens (high T) the resulting distribution.
+
+**Interact with the widget:** set T to 0.3, observe that "the" dominates with very high probability. Then raise T to 1.5 — probability mass spreads across more tokens. This single scalar controls the creativity-coherence tradeoff in every GPT-family model.
+
+<TemperatureSampler client:load />
+
+<PredictThenReveal client:load predictPrompt="GPT-2 was trained as a plain language model (predict the next token) yet it can do translation, summarization, and QA zero-shot. How does the training objective enable task generalization without any task-specific supervision?">
+  A language model trained on diverse web text implicitly learns to predict text that follows questions, answers, translations, summaries, and code — because the web contains all of these. When you prompt with "Translate English to French: cheese =>", the model has seen similar patterns and learns that "fromage" is the statistically likely continuation. The task emerges from the data distribution, not from labels.
+</PredictThenReveal>
+
+<SrsCard id="gpt2-zero-shot" paper="gpt2" prompt="How does GPT-2 perform tasks zero-shot, and what architectural choice makes it decoder-only?" answer="GPT-2 frames every task as next-token prediction: the task description and context are prepended as a prompt and the model generates the completion. Causal (left-to-right) self-attention masks future positions, making GPT-2 a decoder-only model suitable for autoregressive generation." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What does 'zero-shot' mean in the context of GPT-2?", options: [
+    { text: "The model solves tasks using only a natural-language prompt, with no gradient updates or labeled examples for that task", correct: true, explain: "GPT-2 conditions on a prompt that describes the task and generates the answer autoregressively, never updating its weights for the target task." },
+    { text: "The model was trained on zero labeled examples of any kind", correct: false, explain: "GPT-2 was trained on 40 GB of web text — a massive unlabeled corpus. 'Zero-shot' refers to inference on downstream tasks without task-specific fine-tuning." },
+    { text: "The model samples with temperature T=0, selecting the highest-probability token at each step", correct: false, explain: "T=0 sampling (greedy) is one decoding strategy. Zero-shot refers to the absence of task-specific supervised training, not the temperature setting." },
+  ]},
+  { prompt: "What effect does lowering temperature T toward 0 have on the next-token distribution?", options: [
+    { text: "The distribution concentrates on the highest-probability token, approaching a one-hot (greedy) distribution", correct: true, explain: "Dividing logits by a small T amplifies differences — the largest logit dominates after softmax, concentrating virtually all probability mass on one token." },
+    { text: "The distribution becomes uniform, giving equal probability to all tokens", correct: false, explain: "Uniform distribution is the high-temperature limit (T→∞). Low temperature sharpens the distribution." },
+    { text: "The entropy increases, producing more creative and diverse text", correct: false, explain: "Low temperature reduces entropy and diversity. High temperature increases entropy and diversity." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+At each generation step, the model produces a logit vector **z** over the vocabulary. Temperature T rescales these logits before the softmax:
+
+<Math display expr="p(x_t \mid x_{<t}) = \text{softmax}\!\left(\frac{\mathbf{z}}{T}\right)_t = \frac{\exp(z_t / T)}{\sum_j \exp(z_j / T)}" />
+
+The **entropy** of the resulting distribution measures its spread:
+
+<Math display expr="H = -\sum_i p_i \log p_i" />
+
+High entropy means the model is uncertain and assigns non-trivial probability to many tokens (creative, diverse). Low entropy means the model is confident and concentrates on a single token (predictable, coherent).
+
+<DerivationStep client:load
+  question={{
+    prompt: "As T→0, what happens to the softmax output? Derive the limiting behavior.",
+    options: [
+      { text: "softmax(z/T) → one-hot on argmax(z): all probability on the highest-logit token, zero elsewhere", correct: true, explain: "Divide each exponent: exp(z_i/T) / Σ_j exp(z_j/T). Factor out exp(z_max/T): numerator becomes exp((z_i−z_max)/T). For i≠argmax, z_i−z_max < 0, so (z_i−z_max)/T→−∞ and exp→0. For i=argmax, exp(0)=1. So the ratio → 1 for argmax, 0 for all others." },
+      { text: "softmax(z/T) → uniform distribution as T→0", correct: false, explain: "Uniform is the T→∞ limit. As T→0, differences between logits are amplified, not smoothed." },
+      { text: "softmax(z/T) → proportional to z_i (linear in logits) as T→0", correct: false, explain: "Linear scaling is not a softmax limit. softmax always exponentiates; the T→0 limit is a one-hot." },
+    ],
+  }}
+  revealExpr="\lim_{T \to 0} \text{softmax}(\mathbf{z}/T) = \mathbf{e}_{\arg\max \mathbf{z}} \quad \text{(one-hot on highest logit)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "As T→∞, what happens to the softmax output? Derive the limiting behavior.",
+    options: [
+      { text: "softmax(z/T) → uniform over all tokens: each token gets probability 1/V", correct: true, explain: "As T→∞, z_i/T→0 for all i, so exp(z_i/T)→1. The softmax becomes (1/V, …, 1/V) — a uniform distribution. Temperature washes out all logit differences." },
+      { text: "softmax(z/T) → softmax(z): unchanged at high temperature", correct: false, explain: "At T=1 you get standard softmax(z). As T grows beyond 1 the distribution flattens further toward uniform." },
+      { text: "softmax(z/T) → 0 for all tokens as T→∞", correct: false, explain: "Probabilities must sum to 1; they cannot all go to 0. The limit is uniform (each = 1/V)." },
+    ],
+  }}
+  revealExpr="\lim_{T \to \infty} \text{softmax}(\mathbf{z}/T) = \left(\tfrac{1}{V}, \ldots, \tfrac{1}{V}\right) \quad \text{(uniform)}"
+/>
+
+<SrsCard id="gpt2-temperature" paper="gpt2" prompt="Write the temperature-scaled softmax for token t, and state what T→0 and T→∞ produce." answer="p(x_t|x_{<t}) = exp(z_t/T) / Σ_j exp(z_j/T). As T→0: one-hot on argmax (greedy). As T→∞: uniform over vocabulary." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Which quantity measures how spread out the next-token distribution is?", options: [
+    { text: "Shannon entropy H = −Σ p_i log p_i: high when distribution is spread, low when concentrated", correct: true, explain: "Entropy is maximized by the uniform distribution (H = log V) and minimized at 0 by a one-hot. It directly quantifies the uncertainty or diversity of the distribution." },
+    { text: "The variance of the logit vector z", correct: false, explain: "Logit variance affects the distribution shape before softmax, but entropy is the standard measure of spread of the output probability distribution." },
+    { text: "The L2 norm of the probability vector p", correct: false, explain: "The L2 norm of p is large when concentrated (approaches 1 for one-hot) and small when uniform (1/√V). While correlated with concentration, entropy is the canonical information-theoretic measure." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the GPT-2 generation loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Tokenize the input prompt into a sequence of token IDs",
+  "Forward pass through all Transformer decoder layers to get logit vector z",
+  "Divide logits by temperature T: z_T = z / T",
+  "Apply softmax to get probability distribution: p = softmax(z_T)",
+  "Sample next token from p (or take argmax if T≈0), append to sequence",
+]} />
+
+Fill the blank in the temperature-softmax pseudocode:
+
+```text
+def generate_next_token(model, tokens, temperature):
+    logits = model.forward(tokens)   # shape: [vocab_size]
+    logits_T = ______
+    probs = softmax(logits_T)
+    return sample(probs)
+```
+
+<FillBlank answer="logits / temperature" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the generation loop, when do we stop producing new tokens?", options: [
+    { text: "When a special end-of-sequence (EOS) token is sampled, or when the output reaches a maximum length limit", correct: true, explain: "GPT-2 uses a special <|endoftext|> token. Generation halts when this token is sampled, or when a user-specified max length is reached." },
+    { text: "When the entropy of the distribution drops below 1 bit", correct: false, explain: "Entropy thresholding is not a standard stopping criterion. EOS token sampling is the canonical termination signal." },
+    { text: "After exactly as many steps as the prompt length", correct: false, explain: "GPT-2 generates tokens until an EOS or max-length condition is hit, independent of the prompt length." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement temperature-scaled softmax in NumPy. Given a logit array and a temperature scalar, return a probability distribution. The function should handle T=1 (standard softmax), T close to 0 (near-greedy), and verify that output probabilities sum to 1.
+
+<HintFade client:load
+  hints={[
+    "Start with numerical stability: subtract the max logit before exponentiating. Then divide all logits by temperature first, then apply the stable softmax.",
+    "Structure: scaled = logits / T; then numerically stable softmax: exp(scaled - max(scaled)) / sum(exp(scaled - max(scaled))).",
+    "Full implementation: def temperature_softmax(logits, T): scaled = np.array(logits, dtype=float) / T; shifted = scaled - scaled.max(); exps = np.exp(shifted); return exps / exps.sum()",
+  ]}
+  solutionCode={`import numpy as np
+
+def temperature_softmax(logits, T=1.0):
+    logits = np.array(logits, dtype=float)
+    scaled = logits / T
+    shifted = scaled - scaled.max()  # numerical stability
+    exps = np.exp(shifted)
+    return exps / exps.sum()`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def temperature_softmax(logits, T=1.0):
+    # TODO: implement temperature-scaled softmax
+    # Returns probability array of same shape as logits
+    pass
+
+logits = np.array([2.5, 1.8, 1.2, 0.9, 0.4, -0.3])
+
+print("T=1.0:", temperature_softmax(logits, T=1.0).round(4))
+print("T=0.3:", temperature_softmax(logits, T=0.3).round(4))
+print("T=2.0:", temperature_softmax(logits, T=2.0).round(4))
+print("Sum check:", temperature_softmax(logits, T=1.0).sum())
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def temperature_softmax(logits, T=1.0):
+    logits = np.array(logits, dtype=float)
+    scaled = logits / T
+    shifted = scaled - scaled.max()
+    exps = np.exp(shifted)
+    return exps / exps.sum()
+`}
+  testCode={`import numpy as np
+
+logits = np.array([2.5, 1.8, 1.2, 0.9, 0.4, -0.3])
+
+# Test 1: T=1 gives standard softmax (output sums to 1)
+p1 = temperature_softmax(logits, T=1.0)
+assert abs(p1.sum() - 1.0) < 1e-6, f"Probabilities must sum to 1, got {p1.sum()}"
+
+# Test 2: all probabilities non-negative
+assert np.all(p1 >= 0), "All probabilities must be non-negative"
+
+# Test 3: T=1 matches manual softmax
+exps = np.exp(logits - logits.max())
+expected = exps / exps.sum()
+assert np.allclose(p1, expected), "T=1 should match standard softmax"
+
+# Test 4: low T concentrates on argmax
+p_low = temperature_softmax(logits, T=0.01)
+assert np.argmax(p_low) == np.argmax(logits), "Low T should concentrate on argmax"
+assert p_low.max() > 0.99, f"Low T top-1 prob should be >0.99, got {p_low.max():.4f}"
+
+# Test 5: high T flattens toward uniform
+p_high = temperature_softmax(logits, T=100.0)
+assert p_high.max() - p_high.min() < 0.01, "High T should approach uniform distribution"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why do we subtract the max logit before exponentiating in the softmax implementation?", options: [
+    { text: "To prevent floating-point overflow: exp(z) can overflow for large z, but exp(z − max(z)) ≤ exp(0) = 1 for all elements", correct: true, explain: "The mathematically equivalent trick exp(z_i − max_z) / Σ exp(z_j − max_z) = exp(z_i) / Σ exp(z_j) keeps all exponents ≤ 0, preventing overflow while giving exactly the same result." },
+    { text: "To normalize the logits to zero mean, which is required for the softmax to be well-defined", correct: false, explain: "Softmax is well-defined for any real-valued logits. Subtracting the max is purely for numerical stability, not a mathematical requirement." },
+    { text: "To speed up computation by reducing the magnitude of exponentials", correct: false, explain: "The primary motivation is numerical stability (preventing overflow), not speed. The computation count is unchanged." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/gpt2.pdf" title="GPT-2: Unsupervised Multitask Learners" />
+
+Suggested reading order: §2 (Approach — WebText dataset, decoder-only architecture, and how tasks are framed as language modeling) → §3 (Experiments — zero-shot results on language modeling, translation, summarization, and QA benchmarks) → §4 (Generalization vs Memorization — analysis of overlap between WebText and test sets).
+
+</StageSection>
