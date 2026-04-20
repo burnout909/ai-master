@@ -1,0 +1,33 @@
+# Batch overnight progress — 2026-04-21
+# Format: <iso_time>  <status>  <slug>  <sha_widget> <sha_mdx> <notes>
+# status: OK | FAIL
+2026-04-21T00:58:04+09:00  OK  alexnet  1cb0c48 01895c3  widget+mdx
+2026-04-21T01:01:49+09:00  OK  dropout  847cd76 6df102d  widget+mdx
+2026-04-21T01:06:28+09:00  OK  adam  8735b71 4bcf70c  widget+mdx
+2026-04-21T01:10:59+09:00  OK  bahdanau  60001cd 55f069f  widget+mdx
+2026-04-21T01:15:10+09:00  OK  seq2seq  8e3fb28 ca298b4  widget+mdx
+2026-04-21T02:29:55+09:00  OK  batchnorm  54f517e d285614  widget+mdx(stream-timeout-recovery)
+2026-04-21T02:33:28+09:00  OK  resnet  79d8176 56b0fef  widget+mdx
+2026-04-21T02:37:22+09:00  OK  gan  8321592 e80b789  widget+mdx
+2026-04-21T02:41:15+09:00  OK  bert  d42c304 06bdd3e  widget+mdx
+2026-04-21T02:44:49+09:00  OK  gpt2  2b50895 54cb865  widget+mdx
+2026-04-21T02:48:47+09:00  OK  gpt3  f67b100 3b3bf4e  widget+mdx
+2026-04-21T02:52:44+09:00  OK  vit  e8387a7 6e87cbb  widget+mdx
+2026-04-21T02:57:02+09:00  OK  clip  c99972b 32e2f6c  widget+mdx
+2026-04-21T03:01:47+09:00  OK  chinchilla  1c9b5a1 21ad568  widget+mdx
+2026-04-21T03:07:09+09:00  OK  ldm  3240aaf f02135c  widget+mdx
+2026-04-21T03:12:18+09:00  OK  cfg  50259d9 75ed701  widget+mdx
+2026-04-21T03:17:15+09:00  OK  flow-matching  7bc24ee b73b44a  widget+mdx
+2026-04-21T03:22:11+09:00  OK  flashattention  eadd432 f850613  widget+mdx
+2026-04-21T03:26:52+09:00  OK  gqa  d940755 b7cbc0a  widget+mdx
+2026-04-21T03:57:16+09:00  OK  mamba  bfcc2f4 fe04e15  widget+mdx(stream-timeout-recovery)
+2026-04-21T04:02:25+09:00  OK  ppo  625a4b6 ac8d821  widget+mdx
+2026-04-21T04:07:13+09:00  OK  instructgpt  fb01c1c f13405c  widget+mdx
+2026-04-21T04:11:50+09:00  OK  dpo  6713656 d20fb9a  widget+mdx
+2026-04-21T04:16:37+09:00  OK  constitutional  562ea44 b771f4d  widget+mdx
+2026-04-21T04:21:33+09:00  OK  cot  93c59dd 73d4154  widget+mdx
+2026-04-21T04:26:15+09:00  OK  toolformer  d56941a 6b62742  widget+mdx
+2026-04-21T04:31:08+09:00  OK  reflexion  ca0c705 27bb8b1  widget+mdx
+2026-04-21T04:35:54+09:00  OK  tot  b167668 73ae005  widget+mdx
+2026-04-21T04:40:55+09:00  OK  voyager  907bb0d 199f2c2  widget+mdx
+2026-04-21T04:46:02+09:00  OK  deepseek-r1  3d2dc2f d4546f6  widget+mdx
