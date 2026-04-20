@@ -1,0 +1,309 @@
+---
+slug: ldm
+title: "High-Resolution Image Synthesis with Latent Diffusion Models"
+authors: "Rombach, Blattmann, Lorenz, Esser, Ommer"
+year: 2022
+era: generative
+arxivId: "2112.10752"
+estimatedMinutes: 50
+prerequisites: ["ddpm"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { LatentVsPixel } from "../../components/widgets/LatentVsPixel.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+DDPM (Ho et al., 2020) proved that diffusion models can generate high-quality images — but there is a catch. The forward and reverse processes both operate directly on pixel arrays. At 512x512 resolution, that means working with 512 x 512 = 262,144 individual values per image. Every U-Net forward pass during training and every denoising step at inference time must process all those values. Attention scales quadratically in the number of tokens, so moving from 256x256 to 512x512 multiplies the attention cost by 16x. Pushing to 1024x1024 is almost impractical in pixel space.
+
+Rombach et al. (2022) asked: do we actually need to run diffusion on raw pixels? Most of the redundancy in a natural image lives at the perceptual level — the fine-grained texture details — not at the semantic level. A powerful image encoder (the encoder half of a VAE) can compress a 512x512 image into a 64x64 latent grid — 64 times fewer spatial positions — while preserving everything semantically meaningful. **Latent Diffusion Models** (LDMs) run the entire diffusion process in this compressed latent space and only decode back to pixels once, at the very end. This is the architecture behind Stable Diffusion.
+
+<PredictThenReveal client:load predictPrompt="Before playing with the widget: if the VAE encoder uses a spatial downsampling factor f=8 on a 512x512 image, how many latent tokens will there be versus pixel tokens? And roughly how does compute change?">
+  At f=8 the spatial size shrinks from 512 to 512/8=64 in each dimension, giving 64x64=4,096 latent tokens versus 512x512=262,144 pixel tokens — a 64x reduction in sequence length. Attention cost scales as tokens squared, so the FLOP savings are roughly 64^2 = 4,096x for the attention layers. This is the core efficiency argument of the paper.
+</PredictThenReveal>
+
+**Interact with the widget:** select different resolutions and adjust the downsampling factor. Watch how token count and the compute ratio change. Notice that f=8 at 512x512 gives exactly the 4,096 latent tokens Stable Diffusion uses, compared to 262,144 pixel tokens.
+
+<LatentVsPixel client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: why does the compute ratio grow so fast as f increases? What does that tell you about the architectural choice of f=8 in Stable Diffusion?">
+  Because attention is quadratic in sequence length, halving the token count quarters the cost — so a factor-f downsampling gives f^4 FLOP savings for attention. At f=8, that is 4,096x cheaper. The paper found that f=4 to f=8 gives the best quality-efficiency tradeoff: below f=4, the savings are modest; above f=8, the latent is so compressed that the VAE loses perceptual quality and the diffusion model cannot recover it.
+</PredictThenReveal>
+
+<SrsCard id="ldm-latent-space" paper="ldm" prompt="Why does LDM run diffusion in latent space rather than pixel space, and what enables this?" answer="Running diffusion in latent space reduces the sequence length by f^2 (f=8 is typical), cutting attention FLOPs by roughly f^4=4096x at 512x512. This is enabled by first training a VAE that learns a perceptually compressed latent representation — the encoder compresses spatial dimensions by factor f, and the decoder reconstructs the full pixel image from the latent." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "At 512x512 with downsampling factor f=8, how many latent tokens does LDM diffuse over?", options: [
+    { text: "4,096 — because (512/8) x (512/8) = 64 x 64 = 4,096", correct: true, explain: "The VAE encoder reduces each spatial dimension by f=8, so 512->64 in each axis, giving 64x64=4,096 latent positions. Compare this to 262,144 pixel tokens — a 64x reduction in sequence length and roughly 4,096x reduction in attention FLOPs." },
+    { text: "65,536 — because 512x512 / 4 = 65,536 (f=2 is applied twice)", correct: false, explain: "LDM uses a single-stage VAE encoder with a total spatial downsampling factor of f. At f=8 the spatial size becomes 512/8=64 in each dimension, not 512/2=256." },
+    { text: "262,144 — LDM still denoises all pixel tokens but batches them efficiently", correct: false, explain: "This is the entire point of LDM: it does NOT diffuse in pixel space. It trains a VAE first, then diffuses in the compressed latent space of size (H/f) x (W/f)." },
+  ]},
+  { prompt: "What role does the VAE play in Latent Diffusion Models?", options: [
+    { text: "The VAE encoder compresses images into a low-dimensional latent space for efficient diffusion; after denoising, the VAE decoder reconstructs pixels from the latent — the VAE is trained separately and then frozen during LDM training", correct: true, explain: "This two-stage design is the key architectural insight of LDM. The VAE handles perceptual compression; the diffusion model handles generative modeling in the compressed space. Decoupling them lets each component specialize." },
+    { text: "The VAE provides a differentiable renderer so that gradients flow from pixel loss back through the diffusion model during joint training", correct: false, explain: "The VAE is trained separately (first) and frozen when the LDM is trained. There is no joint end-to-end gradient flow through both the VAE and the diffusion model." },
+    { text: "The VAE generates the initial noisy image z_T that the diffusion model then denoises to produce z_0", correct: false, explain: "z_T is sampled from a standard Gaussian N(0,I) at inference time — it is pure noise. The VAE encodes real images to latents during training, and decodes the final denoised latent z_0 back to pixels at inference." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+LDM training happens in two phases. Phase 1 trains the VAE to learn a perceptually compressed latent representation. Phase 2 trains the diffusion model inside that latent space, with optional text conditioning via cross-attention.
+
+**Phase 1 — VAE training:**
+
+<Math display expr="\mathcal{L}_{\text{VAE}} = \|x - D(E(x))\|^2 + \lambda_{\text{KL}}\, \mathrm{KL}(q(z|x)\,\|\,p(z))" />
+
+Here E is the encoder that maps image x to latent distribution q(z|x), D is the decoder that reconstructs x from a sample z, and the KL term regularises the latent space toward a standard Gaussian. A small lambda_KL (around 1e-6) provides just enough regularisation without over-compressing the latent.
+
+**Phase 2 — LDM training:**
+
+<Math display expr="\mathcal{L}_{\text{LDM}} = \mathbb{E}_{z_0, \varepsilon, t}\!\left[\|\varepsilon - \varepsilon_\theta(z_t, t, c)\|^2\right]" />
+
+where z_t is the noisy latent at timestep t:
+
+<Math display expr="z_t = \sqrt{\bar{\alpha}_t}\, z_0 + \sqrt{1 - \bar{\alpha}_t}\,\varepsilon, \quad \varepsilon \sim \mathcal{N}(0, I)" />
+
+This is exactly the DDPM objective — except x_0 is replaced by z_0 (the VAE-encoded latent) and the U-Net now additionally receives a conditioning signal c (e.g., a text prompt encoded by CLIP). The conditioning is injected through **cross-attention layers** inside the U-Net:
+
+<Math display expr="Q = W_Q z,\quad K = W_K c,\quad V = W_V c" />
+<Math display expr="\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{Q K^\top}{\sqrt{d}}\right) V" />
+
+The latent feature map z attends to the text embedding c: each spatial position in z queries which text tokens are most relevant, then aggregates their value vectors. This is how "a cat sitting on a bench" steers the denoised output toward cats and benches.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does LDM train the VAE first in a separate phase, rather than training VAE and diffusion model jointly end-to-end?",
+    options: [
+      { text: "Decoupling lets each component specialize: the VAE learns perceptual compression (pixel-level fidelity) while the diffusion model learns semantic generative modeling in the compact latent — joint training would force the diffusion objective to also account for pixel-level reconstruction, wasting capacity", correct: true, explain: "The VAE loss is dominated by low-level texture fidelity. The diffusion loss is focused on semantic structure in the latent. If trained jointly the competing gradients would compromise both. Separate training also allows the same frozen VAE to be reused across many different diffusion experiments." },
+      { text: "Joint training is impossible because backpropagation cannot pass through the discrete latent codebook of the VAE", correct: false, explain: "LDM uses a continuous VAE (not a VQ-VAE with a discrete codebook in the standard formulation). The reparameterization trick makes the KL term differentiable, so joint training would technically be possible — the authors chose separate training for the specialization reason described above." },
+      { text: "The VAE must be pre-trained on a much larger dataset than the diffusion model, so the schedules are incompatible", correct: false, explain: "The paper does not cite dataset incompatibility as the reason. The key motivation is the architectural specialization argument: compression quality and generative quality benefit from separate objectives." },
+    ],
+  }}
+  revealExpr="\mathcal{L}_{\text{total}} = \underbrace{\mathcal{L}_{\text{VAE}}}_{\text{perceptual compression}} + \underbrace{\mathcal{L}_{\text{LDM}}}_{\text{semantic generation}} \quad \text{(trained sequentially, not jointly)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "In the cross-attention equations Q = W_Q z, K = W_K c, V = W_V c, the queries come from z (the latent image features) and the keys/values come from c (the text embeddings). What does this mean intuitively for how text controls the image?",
+    options: [
+      { text: "Each spatial position in the latent z asks 'which part of the text description is most relevant to me?' via the Q-K dot product, then updates its features by attending to those text tokens' value vectors — text acts as a semantic guide for each image region", correct: true, explain: "This is cross-attention in the encoder-decoder sense: z plays the role of decoder (it asks questions), c plays the role of encoder context (it provides answers). Spatial positions near a 'cat' region will learn to attend heavily to the 'cat' token in c, pulling in cat-related semantics." },
+      { text: "The text embedding c is added element-wise to z at each U-Net block, providing a global shift that biases all spatial positions equally toward the text", correct: false, explain: "Element-wise addition would apply text conditioning uniformly across all spatial positions. Cross-attention is more powerful: it allows different spatial regions to attend to different parts of the text description, enabling fine-grained spatial control." },
+      { text: "The softmax over Q K^T / sqrt(d) measures which text tokens are most noisy, and the attention de-noises them before merging into z", correct: false, explain: "The softmax produces a probability distribution over text token positions for each spatial query. It is not measuring 'noisiness' of text tokens — text embeddings are not noisy. It is measuring semantic relevance between latent positions and text tokens." },
+    ],
+  }}
+  revealExpr="\text{Attn}(z, c) = \text{softmax}\!\left(\frac{W_Q z\,(W_K c)^\top}{\sqrt{d}}\right)(W_V c) \;\text{: each pixel position queries all text tokens}"
+/>
+
+<SrsCard id="ldm-two-phases" paper="ldm" prompt="Describe the two training phases of LDM and the loss function for each." answer="Phase 1 (VAE): L_VAE = ||x - D(E(x))||^2 + lambda_KL * KL(q(z|x), p(z)). Trains an encoder E and decoder D so that images can be losslessly round-tripped through the latent space. Phase 2 (LDM): L_LDM = E[||eps - eps_theta(z_t, t, c)||^2]. Trains a U-Net to predict noise in latent space, conditioned on text c via cross-attention. The VAE is frozen during Phase 2." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the LDM loss L = E[||eps - eps_theta(z_t, t, c)||^2], what is z_t and how is it constructed from z_0?", options: [
+    { text: "z_t = sqrt(alpha_bar_t) * z_0 + sqrt(1 - alpha_bar_t) * eps, where eps ~ N(0,I) — a convex combination of the clean latent z_0 and pure Gaussian noise, controlled by the noise schedule alpha_bar_t", correct: true, explain: "This is the standard DDPM forward process reparameterized for the latent. alpha_bar_t decreases from ~1 at t=0 (almost clean) to ~0 at t=T (almost pure noise). The U-Net learns to predict which eps was added given the noisy z_t." },
+    { text: "z_t is the image latent at step t of the VAE training loop, not related to the diffusion noise schedule", correct: false, explain: "The VAE is fully trained and frozen before LDM training begins. z_t refers to the diffusion timestep, not a VAE training iteration. The subscript t indexes the noise level in the forward diffusion process." },
+    { text: "z_t = E(x_t), i.e., the VAE encoder applied to a noisy pixel image x_t at diffusion step t", correct: false, explain: "LDM does NOT apply noise in pixel space and then encode. Instead, it encodes the clean image once (z_0 = E(x_0)) and then adds noise directly in latent space to get z_t. This is the key efficiency trick." },
+  ]},
+  { prompt: "Cross-attention in LDM uses Q from z (latent) and K,V from c (text). Why is this asymmetry — rather than self-attention over [z; c] concatenated — the preferred design?", options: [
+    { text: "Cross-attention keeps the spatial resolution of z constant (it only attends to text, not to other spatial positions), whereas concatenating [z; c] would mix spatial and token dimensions and square the attention cost", correct: true, explain: "In cross-attention, each of the H/f x W/f spatial positions in z attends over M text tokens, costing O(HW/f^2 * M). Self-attention over [z; c] would cost O((HW/f^2 + M)^2), which is dominated by the spatial term and wastes computation mixing spatial positions with each other in the same operation as text conditioning." },
+    { text: "Concatenating z and c is impossible because they have different spatial dimensions and cannot be stacked along the same axis", correct: false, explain: "You can always flatten both to 1D sequences of tokens and concatenate them — many vision-language models do exactly this. The choice of cross-attention is a design decision, not a hard constraint." },
+    { text: "Cross-attention is preferred because it allows the text tokens to be updated by the image during training, improving the CLIP text encoder fine-tuning", correct: false, explain: "The text encoder (CLIP) is typically frozen during LDM training. The cross-attention only updates the latent features z, not the text embeddings c. The asymmetry is about efficient image-text interaction, not fine-tuning the text encoder." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of LDM inference (text-to-image generation) in the correct order:
+
+<LineReorder client:load lines={[
+  "Encode text prompt to embedding c via frozen CLIP text encoder",
+  "Sample pure noise latent z_T ~ N(0, I) at full latent resolution (H/f x W/f x C_z)",
+  "Iteratively denoise: for t = T down to 1, predict noise eps_theta(z_t, t, c) and update z_{t-1}",
+  "Decode final clean latent z_0 back to pixel image x_0 via VAE decoder D(z_0)",
+]} />
+
+Fill in the blank — the final pixel reconstruction step:
+
+```text
+def ldm_decode(z_0, vae_decoder):
+    # z_0: denoised latent of shape (H/f, W/f, C_z)
+    # vae_decoder: pre-trained, frozen VAE decoder D
+    x_0 = ______
+    return x_0  # pixel image of shape (H, W, 3)
+```
+
+<FillBlank answer="vae_decoder(z_0)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "During LDM inference, how many times is the VAE decoder called?", options: [
+    { text: "Once — at the very end, to decode the fully denoised latent z_0 into a pixel image. The T denoising steps all operate in latent space, never touching pixels.", correct: true, explain: "This is the main efficiency advantage of LDM over pixel-space diffusion. T denoising U-Net forward passes (typically T=50-1000) all run on the small latent grid (e.g., 64x64), and the expensive VAE decode from 64x64 latent to 512x512 pixels happens only once." },
+    { text: "T times — the decoder is called after each denoising step to check perceptual quality and guide the next step", correct: false, explain: "Decoding at every step would negate LDM's efficiency advantage. The entire denoising chain runs in the cheap latent space; pixel reconstruction happens only at the end." },
+    { text: "T times for the encoder and once for the decoder — the encoder encodes the partial image at each step to keep z_t consistent with the conditioning", correct: false, explain: "There is no re-encoding during inference. z_T starts as pure Gaussian noise (no image to encode) and is iteratively refined in latent space. The VAE encoder is only used during training to get z_0 from real images." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement classifier-free cross-attention in NumPy. Given a latent feature matrix z of shape (N, d) and a text conditioning matrix c of shape (M, d_c), compute the cross-attention output using learned projections W_Q (d x d), W_K (d_c x d), W_V (d_c x d_v). The output should have shape (N, d_v) and each row of the attention weight matrix should sum to 1.
+
+<HintFade client:load
+  hints={[
+    "Start by computing Q = z @ W_Q (shape N x d), K = c @ W_K (shape M x d), V = c @ W_V (shape M x d_v). Then compute the raw attention scores as Q @ K.T / sqrt(d) — shape (N, M).",
+    "Apply softmax row-wise to the (N, M) score matrix. np.exp(scores - scores.max(axis=1, keepdims=True)) / sum trick avoids overflow. Then multiply by V to get output shape (N, d_v).",
+    "Full solution: Q = z @ W_Q; K = c @ W_K; V = c @ W_V; scores = Q @ K.T / np.sqrt(d); scores -= scores.max(axis=1, keepdims=True); w = np.exp(scores); w /= w.sum(axis=1, keepdims=True); return w @ V",
+  ]}
+  solutionCode={`import numpy as np
+
+def cross_attention(z, c, W_Q, W_K, W_V):
+    """
+    z: (N, d)   latent query features
+    c: (M, d_c) text key/value features
+    W_Q: (d, d)   query projection
+    W_K: (d_c, d) key projection
+    W_V: (d_c, d_v) value projection
+    returns: (N, d_v)
+    """
+    d = W_Q.shape[1]
+    Q = z @ W_Q          # (N, d)
+    K = c @ W_K          # (M, d)
+    V = c @ W_V          # (M, d_v)
+    scores = Q @ K.T / np.sqrt(d)   # (N, M)
+    scores -= scores.max(axis=1, keepdims=True)  # numerical stability
+    w = np.exp(scores)
+    w /= w.sum(axis=1, keepdims=True)            # softmax
+    return w @ V                                 # (N, d_v)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def cross_attention(z, c, W_Q, W_K, W_V):
+    """
+    z: (N, d)   latent query features
+    c: (M, d_c) text key/value features
+    W_Q: (d, d)   query projection
+    W_K: (d_c, d) key projection
+    W_V: (d_c, d_v) value projection
+    returns: (N, d_v)
+    """
+    d = W_Q.shape[1]
+    # TODO: compute Q, K, V projections
+    # TODO: compute scaled dot-product scores (N, M)
+    # TODO: apply row-wise softmax
+    # TODO: return weighted sum of values
+    pass
+
+# Quick sanity check
+np.random.seed(42)
+N, M, d, d_c, d_v = 4, 6, 8, 10, 8
+z = np.random.randn(N, d)
+c = np.random.randn(M, d_c)
+W_Q = np.random.randn(d, d)
+W_K = np.random.randn(d_c, d)
+W_V = np.random.randn(d_c, d_v)
+
+out = cross_attention(z, c, W_Q, W_K, W_V)
+print("Output shape:", out.shape if out is not None else "None")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def cross_attention(z, c, W_Q, W_K, W_V):
+    d = W_Q.shape[1]
+    Q = z @ W_Q
+    K = c @ W_K
+    V = c @ W_V
+    scores = Q @ K.T / np.sqrt(d)
+    scores -= scores.max(axis=1, keepdims=True)
+    w = np.exp(scores)
+    w /= w.sum(axis=1, keepdims=True)
+    return w @ V
+`}
+  testCode={`import numpy as np
+
+def cross_attention(z, c, W_Q, W_K, W_V):
+    d = W_Q.shape[1]
+    Q = z @ W_Q
+    K = c @ W_K
+    V = c @ W_V
+    scores = Q @ K.T / np.sqrt(d)
+    scores -= scores.max(axis=1, keepdims=True)
+    w = np.exp(scores)
+    w /= w.sum(axis=1, keepdims=True)
+    return w @ V
+
+np.random.seed(0)
+N, M, d, d_c, d_v = 4, 6, 8, 10, 12
+z = np.random.randn(N, d)
+c = np.random.randn(M, d_c)
+W_Q = np.random.randn(d, d)
+W_K = np.random.randn(d_c, d)
+W_V = np.random.randn(d_c, d_v)
+
+out = cross_attention(z, c, W_Q, W_K, W_V)
+
+# Test 1: output shape is (N, d_v)
+assert out.shape == (N, d_v), f"Expected shape ({N}, {d_v}), got {out.shape}"
+
+# Test 2: attention weights (reconstructed) sum to 1 per row
+Q = z @ W_Q
+K = c @ W_K
+scores = Q @ K.T / np.sqrt(d)
+scores -= scores.max(axis=1, keepdims=True)
+w = np.exp(scores)
+w /= w.sum(axis=1, keepdims=True)
+row_sums = w.sum(axis=1)
+assert np.allclose(row_sums, 1.0, atol=1e-6), f"Attention rows do not sum to 1: {row_sums}"
+
+# Test 3: output is finite (no NaN or Inf from numerical instability)
+assert np.all(np.isfinite(out)), "Output contains NaN or Inf — check numerical stability"
+
+# Test 4: output changes when conditioning c changes (text actually influences output)
+c2 = np.random.randn(M, d_c)
+out2 = cross_attention(z, c2, W_Q, W_K, W_V)
+assert not np.allclose(out, out2), "Output should change when conditioning c changes"
+
+# Test 5: d_v dimension determined by W_V, not W_Q
+d_v2 = 16
+W_V2 = np.random.randn(d_c, d_v2)
+out3 = cross_attention(z, c, W_Q, W_K, W_V2)
+assert out3.shape == (N, d_v2), f"Output d_v should match W_V columns, got {out3.shape}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the cross-attention implementation, why do we subtract scores.max(axis=1, keepdims=True) before applying np.exp?", options: [
+    { text: "Numerical stability: softmax(x) = softmax(x - c) for any constant c per row, so subtracting the row maximum prevents exp() from overflowing when scores are large, without changing the output values", correct: true, explain: "exp(large_number) can overflow to infinity in float32. Subtracting the row max shifts all scores to be <= 0, making exp() return values in (0, 1]. The softmax output is identical because the constant cancels in numerator and denominator: exp(x_i - c) / sum(exp(x_j - c)) = exp(x_i) / sum(exp(x_j))." },
+    { text: "It normalizes the scores to zero mean, which is required for the dot-product attention formula to be equivalent to additive attention", correct: false, explain: "Subtracting the row max does not produce zero-mean scores (it produces max-zeroed scores). Additive vs multiplicative attention are different architectural variants unrelated to this numerical trick." },
+    { text: "It implements temperature scaling: dividing by sqrt(d) in the scores is equivalent to multiplying max by 1/sqrt(d), which sharpens the attention distribution", correct: false, explain: "The 1/sqrt(d) scaling and the max-subtraction are separate operations serving different purposes. The sqrt(d) division is applied before the softmax to control the scale of dot products; the max subtraction is purely for numerical stability." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2112.10752.pdf" title="High-Resolution Image Synthesis with Latent Diffusion Models (LDM / Stable Diffusion)" />
+
+Suggested reading order: §3 (Method — overview of the two-stage pipeline) → §3.2 (Latent Diffusion Models — the core diffusion objective and why pixel vs. latent space matters) → §3.3 (Conditioning Mechanisms — cross-attention architecture for text, layout, and other conditioning signals).
+
+</StageSection>
