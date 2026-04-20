@@ -1,0 +1,254 @@
+---
+slug: constitutional
+title: "Constitutional AI: Harmlessness from AI Feedback"
+authors: "Bai et al. (Anthropic)"
+year: 2022
+era: alignment
+arxivId: "2212.08073"
+estimatedMinutes: 45
+prerequisites: ["instructgpt"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { CritiqueLoop } from "../../components/widgets/CritiqueLoop.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+InstructGPT showed that human feedback can align a language model's outputs — but that process requires human raters to read and label thousands of harmful, disturbing, or toxic responses. This is expensive, slow, and potentially damaging to the labelers. Every harmful output needs a human to grade it: there is no automation for the value judgment itself.
+
+Constitutional AI (CAI) changes the source of harmlessness labels. Instead of asking humans whether each model response is harmful, CAI instructs the model to read a short written document called a **constitution** — a list of principles such as "avoid content that is harmful to humans" — and then **self-critique** its own harmful draft against those principles. The model then **rewrites** the draft into a safer revision. The revised text, not the original harmful draft, becomes the training target. Human oversight is now concentrated on writing the constitution, not on reviewing thousands of individual outputs.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: when the model critiques its own harmful draft using a principle like 'Avoid harm', what do you expect the revision to look like compared to the draft? Will the revision simply refuse, or will it try to redirect?">
+  Good revisions do more than refuse — they redirect to a legitimate alternative. The constitution principle guides *what* the critique flags, and the revision must satisfy that principle while still being genuinely useful. A flat refusal often fails the helpfulness dimension. The critique is the reasoning step that connects the principle to the specific harm in the draft; the revision integrates that reasoning into a new response.
+</PredictThenReveal>
+
+**Interact with the widget:** choose a harmful prompt and a principle, then click **Advance step** to walk through draft → critique → revision. Try switching the principle for the same prompt — observe how a different constitutional principle produces a different critique angle and a slightly different revision strategy.
+
+<CritiqueLoop client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: does the constitutional principle used during critique appear verbatim in the final revision, or does it disappear? What does this tell you about where the constitution is useful?">
+  The principle disappears from the revision text — it was only the reasoning scaffold during the critique step. The revision is self-contained; a reader of just the revision would not know which principle triggered it. This reflects how Constitutional AI works in training: the constitution shapes the (critique, revision) pairs used for fine-tuning, but the deployed model has internalized those behaviors without needing the constitution at inference time. The constitution is a training-time tool, not a runtime filter.
+</PredictThenReveal>
+
+<SrsCard id="constitutional-core-insight" paper="constitutional" prompt="What does Constitutional AI replace with AI-generated labels, and what does it keep as human-supervised?" answer="CAI replaces per-response human harmlessness labels with AI-generated (critique, revision) pairs derived from a written constitution. Humans still write the constitution — the list of principles — and provide helpfulness labels. The key shift is that harmful-output labeling is automated via self-critique, concentrating human oversight on the high-level principles rather than line-by-line response grading." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "InstructGPT and Constitutional AI both produce helpful, harmless models via RLHF-style training. What is the key difference in how they generate the harmlessness labels?", options: [
+    { text: "InstructGPT uses human raters to label which of two responses is less harmful, requiring raters to read toxic content. Constitutional AI generates harmlessness labels automatically: the model critiques its own draft against a written principle and produces a revised response, which serves as the training target without humans reading harmful drafts.", correct: true, explain: "This is the central contribution of CAI. The human cost of harmlessness labeling scales with the number of red-team prompts; CAI replaces that human step with an LLM-in-the-loop critique-revision cycle driven by the constitution. Humans only write the constitution, which is a one-time fixed-cost task." },
+    { text: "Constitutional AI removes human feedback entirely — both helpfulness and harmlessness labels are generated by AI using the constitution.", correct: false, explain: "CAI still uses human feedback for helpfulness signals. The constitution and AI-feedback replace only the harmlessness side of the labeling. Removing human feedback entirely would leave the model without any grounding for what users actually find useful." },
+    { text: "Constitutional AI uses a larger number of human raters than InstructGPT, but each rater reviews a shorter excerpt, making the process more efficient.", correct: false, explain: "CAI reduces the number of humans involved in harmlessness labeling, not by distributing shorter excerpts among more raters but by replacing that role with automated AI critique. Humans never need to read the harmful drafts." },
+  ]},
+  { prompt: "In Constitutional AI, the 'constitution' is a list of principles. At what point in the deployed model's lifecycle does the constitution play a role?", options: [
+    { text: "The constitution is used only during training — to guide the critique and revision steps that produce training data and AI preference labels. The deployed model has no access to the constitution at inference time.", correct: true, explain: "The constitution shapes the (critique, revision) pairs for SL-CAI fine-tuning and the AI-generated preference comparisons for RL-CAI. Once training is complete, the model's behavior reflects the principles without needing to consult them explicitly. There is no runtime constitution lookup." },
+    { text: "The constitution is prepended to every user prompt as a system message so the model can consult it when generating responses.", correct: false, explain: "This would be prompt-based constitutional enforcement, not Constitutional AI. CAI internalizes the principles during training rather than applying them at inference time via a system prompt. The two approaches are architecturally different." },
+    { text: "The constitution is used as a classifier head on top of the language model to score every generated token for harmlessness.", correct: false, explain: "No classifier head is added. The constitution is a text document used to condition the critique and revision steps during SL-CAI data generation, not a model component or runtime filter." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Constitutional AI has two training phases, each building on the previous one.
+
+**Phase 1 — SL-CAI (Supervised Learning from CAI data):**
+
+Given a red-team prompt `x` and a harmful draft response `y_0`, the model samples a random principle `p` from the constitution and generates a (critique, revision) pair:
+
+<Math display expr="(c, y_1) \sim \pi_{\text{base}}\!\left(\cdot \mid x,\, y_0,\, p\right)" />
+
+The revision `y_1` is the new training target. Fine-tuning on `(x, y_1)` pairs gives the SL-CAI model `pi_SL`. Multiple critique-revision rounds can be chained: `y_0 → y_1 → y_2`, each conditioned on the same or a different principle.
+
+**Phase 2 — RL-CAI / RLAIF (RL from AI Feedback):**
+
+Instead of human raters picking between two responses, the SL-CAI model scores pairs `(y_1, y_2)` using a constitutional principle as a prompt. This produces an AI-generated preference label:
+
+<Math display expr="\hat{h}(x, y_1, y_2) = \pi_{\text{SL}}\!\left(\text{``}y_1 \succ y_2\text{''} \mid x,\, y_1,\, y_2,\, p\right)" />
+
+A preference model (PM) is trained on these AI-labeled pairs — this is **RLAIF** (RL from AI Feedback). The final policy is then obtained via PPO against the frozen PM, exactly as in InstructGPT's RLHF phase.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does the SL-CAI revision step provide useful training signal for 'how' to fix harmful responses, rather than just teaching the model to refuse?",
+    options: [
+      { text: "The critique step grounds the revision in a specific principle violation, so the model must reason about what made the draft harmful and produce an alternative that satisfies the principle. This trains a transformation behavior (harmful → acceptable) rather than a binary classifier (refuse vs allow).", correct: true, explain: "The (critique, revision) format forces the model to articulate why the draft violates the principle before rewriting. Fine-tuning on these pairs teaches the model a corrective transformation — it learns to spot the harm and fix it, which is richer than learning a refusal policy. This is why revisions redirect rather than simply refuse." },
+      { text: "The SL-CAI revision teaches refusal because the training targets are all refusals; the critique just provides a human-readable explanation for logging purposes.", correct: false, explain: "The revisions in CAI are not refusals — they are redirections that still try to help the user with a legitimate interpretation of the request. The critique and revision together teach the model a nuanced corrective skill, not a blanket refusal policy." },
+      { text: "The revision step is only useful because it increases the diversity of training data; the specific principle used in the critique has no effect on the revision content.", correct: false, explain: "The principle directly shapes what the critique flags and therefore what the revision fixes. Different principles applied to the same draft produce meaningfully different revisions, as visible in the widget. The principle is not cosmetic — it is the normative lens through which the harm is identified." },
+    ],
+  }}
+  revealExpr="y_0 \xrightarrow{\text{critique}(p)} c \xrightarrow{\text{revise}} y_1 \quad \text{(harmful}\to\text{acceptable, guided by }p\text{)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "What role does the constitution play at inference time — after training is complete?",
+    options: [
+      { text: "None. The constitution is used only during training to shape the (critique, revision) pairs for SL-CAI and the preference labels for RL-CAI. The deployed model does not have access to the constitution and does not consult it when generating responses.", correct: true, explain: "This is the key architectural point of CAI. The constitution is a training-time scaffold. Once the model has been fine-tuned on the CAI data and PPO-trained against the RLAIF preference model, the constitutional behaviors are encoded in the weights. The deployed model produces harmless responses without any constitution in its context window." },
+      { text: "The constitution is used as a runtime system prompt to guide every response, but this is hidden from the user interface.", correct: false, explain: "Runtime system-prompt injection is a different technique (prompt-based steering). CAI specifically avoids this: the whole point is to bake harmlessness into the weights via training so that the model is intrinsically safe without relying on any context-window instructions." },
+      { text: "The constitution is used to filter output tokens via a separate safety classifier that runs in parallel with the language model at inference.", correct: false, explain: "No separate safety classifier is added at inference time in the CAI framework. The harmlessness behaviors are entirely internalized in the language model weights through the SL-CAI and RL-CAI training phases." },
+    ],
+  }}
+  revealExpr="\text{constitution} \xrightarrow{\text{training only}} \pi_{\text{RL-CAI}} \quad \text{(no constitution at inference)}"
+/>
+
+<SrsCard id="constitutional-two-phases" paper="constitutional" prompt="Name the two training phases of Constitutional AI and what each produces." answer="(1) SL-CAI: generate (critique, revision) pairs by conditioning the base model on a sampled principle; fine-tune on the revisions to get pi_SL. (2) RL-CAI (RLAIF): use pi_SL to score pairs of responses against constitutional principles, producing AI-generated preference labels; train a preference model on these labels; fine-tune via PPO against the frozen PM to get the final pi_RL-CAI." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is RLAIF and how does it differ from RLHF as used in InstructGPT?", options: [
+    { text: "RLAIF (RL from AI Feedback) replaces human preference labels with labels generated by the SL-CAI model conditioned on a constitutional principle. RLHF (RL from Human Feedback) uses human raters to label which response is better. Both then train a preference model and use PPO — the only difference is the label source.", correct: true, explain: "The acronym captures the substitution exactly: 'Human' becomes 'AI'. The downstream PPO training pipeline is identical. The scalability advantage of RLAIF is that AI-generated labels are cheap, fast, and don't expose labelers to toxic content, though they may carry biases from the labeling model." },
+    { text: "RLAIF trains the policy using policy-gradient directly on AI-scored outputs without a preference model, whereas RLHF requires training a separate reward model first.", correct: false, explain: "RL-CAI still trains a preference model (PM) on the AI-labeled pairs before running PPO — the pipeline is identical to RLHF structurally. The only change is using an AI to generate the preference labels instead of humans." },
+    { text: "RLAIF uses a constitutional principle as the reward function directly, bypassing both preference labeling and PPO.", correct: false, explain: "The principle is used only to prompt the SL-CAI model to generate preference comparisons. The comparison labels are then used to train a separate preference model, which is then the reward signal for PPO. There is no direct use of the principle as a reward function." },
+  ]},
+  { prompt: "In the SL-CAI phase, the constitution principle is sampled randomly for each (prompt, draft) pair. What is the benefit of this random sampling over always using the same principle?", options: [
+    { text: "Random principle sampling exposes the model to diverse critique angles for the same harmful content, teaching it to recognize harm from multiple normative perspectives. A model trained on diverse principles generalizes better than one trained on a single principle's framing.", correct: true, explain: "Different principles highlight different aspects of the same harm (e.g., 'Avoid harm' focuses on direct damage while 'Be honest' focuses on deception). Sampling across principles during training prevents the model from memorizing a fixed critique template and produces more robust harmlessness behavior that can handle novel harmful requests." },
+    { text: "Random sampling is purely a regularization technique to prevent the model from over-fitting to a specific prompt format, with no semantic benefit.", correct: false, explain: "The semantic benefit is real: different principles produce different critiques and revisions even for identical drafts. The diversity is meaningful — it teaches the model to reason about harm in multiple ways, not just avoid one fixed pattern." },
+    { text: "Random sampling is required because the constitution is too large to fit in the model's context window, so only one principle can be included per forward pass.", correct: false, explain: "Context-window constraints are not the stated motivation for random sampling. The constitution in the paper is short enough to fit in context. Random sampling is a design choice to produce diverse training signal, not a technical necessity." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of the SL-CAI data generation loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample a red-team prompt x from the dataset",
+  "Generate a draft response y_0 = model(x)",
+  "Sample a principle p from the constitution",
+  "Generate critique c = model(x, y_0, p, critique_prompt)",
+  "Generate revision y_1 = model(x, y_0, p, c, revision_prompt)",
+]} />
+
+Fill in the blank — the key argument that makes the critique step constitutional:
+
+```text
+def generate_critique(draft, principle, model):
+    prompt = f"Read this response: {draft}\n"
+    prompt += f"Identify how it violates: _______\n"
+    prompt += "Critique:"
+    return model(prompt)
+```
+
+<FillBlank answer="principle" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the SL-CAI loop, the model that generates the critique and revision is the same base model being fine-tuned. What risk does this create, and how does multi-round revision mitigate it?", options: [
+    { text: "A weak base model may produce poor critiques that miss the actual harm, leading to revisions that are only superficially safer. Multi-round revision chains (y_0 → y_1 → y_2) let each revision serve as the next draft, so the model can catch harms it missed in the first critique pass — iteratively improving quality.", correct: true, explain: "The SL-CAI loop is bootstrapped from the base model's own critique capability, which may be imperfect early in training. Chaining multiple rounds (each revision becoming the next draft) provides a form of iterative refinement. As the model improves from SL-CAI fine-tuning, its critique quality also improves, creating a self-improving loop." },
+    { text: "Using the same model for critique and revision creates a self-referential loop that causes training to diverge; multi-round revision breaks this by using a separate frozen model for alternate rounds.", correct: false, explain: "The paper does not use a separate frozen model for alternate rounds. Both critique and revision use the same base model throughout SL-CAI. The risk of poor critique is mitigated by iterating, not by alternating between two different models." },
+    { text: "The risk is reward hacking: the model learns to produce critiques that are easy to satisfy rather than accurate. Multi-round revision prevents this by evaluating the final revision with a held-out human judge.", correct: false, explain: "Reward hacking is a concern for the RL phase, not the SL-CAI phase. In SL-CAI, the training signal is the supervised revision target, not a scalar reward. Multi-round revision improves quality through iteration, not through a separate judge." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a toy **Bradley-Terry preference label** routine using AI scores. Given an array `ai_scores` of shape `(N, 2)` where column 0 is the score for response `y_1` and column 1 is the score for response `y_2`, return an integer array of shape `(N,)` where each entry is `0` if `y_1` wins (higher score) and `1` if `y_2` wins. Use `0` for ties (when scores are equal).
+
+<HintFade client:load
+  hints={[
+    "Compare the two columns of ai_scores. You want to return 0 where column 0 is greater, and 1 where column 1 is greater.",
+    "Use np.where: np.where(condition, value_if_true, value_if_false). The condition is ai_scores[:, 0] > ai_scores[:, 1] (y_1 wins). If False, y_2 wins so return 1.",
+    "Full solution: return np.where(ai_scores[:, 0] > ai_scores[:, 1], 0, 1). This returns 0 (y_1 wins) when column 0 is strictly greater, and 1 (y_2 wins) otherwise — ties default to 1.",
+  ]}
+  solutionCode={`import numpy as np
+
+def bt_labels(ai_scores):
+    """
+    ai_scores: (N, 2) array — column 0 is score for y_1, column 1 for y_2.
+    Returns: (N,) integer array — 0 if y_1 wins, 1 if y_2 wins (ties → 1).
+    """
+    return np.where(ai_scores[:, 0] > ai_scores[:, 1], 0, 1)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def bt_labels(ai_scores):
+    """
+    ai_scores: (N, 2) array — column 0 is score for y_1, column 1 for y_2.
+    Returns: (N,) integer array — 0 if y_1 wins, 1 if y_2 wins (ties → 1).
+    """
+    # TODO: implement
+    pass
+
+# Sanity check
+scores = np.array([[0.9, 0.3], [0.4, 0.8], [0.5, 0.5]])
+result = bt_labels(scores)
+if result is not None:
+    print("Labels:", result, "(expect [0 1 1])")
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def bt_labels(ai_scores):
+    return np.where(ai_scores[:, 0] > ai_scores[:, 1], 0, 1)
+`}
+  testCode={`import numpy as np
+
+def bt_labels(ai_scores):
+    return np.where(ai_scores[:, 0] > ai_scores[:, 1], 0, 1)
+
+# Test 1: output dtype is integer (0 or 1 values)
+scores = np.array([[0.9, 0.3], [0.4, 0.8]])
+labels = bt_labels(scores)
+assert labels.dtype in [np.int32, np.int64, np.int_, np.intp, np.bool_] or np.issubdtype(labels.dtype, np.integer), f"Labels must be integer dtype, got {labels.dtype}"
+
+# Test 2: correct winner when y_1 clearly higher
+scores2 = np.array([[0.9, 0.1]])
+labels2 = bt_labels(scores2)
+assert labels2[0] == 0, f"y_1 should win (score 0.9 vs 0.1), got label {labels2[0]}"
+
+# Test 3: correct winner when y_2 clearly higher
+scores3 = np.array([[0.2, 0.8]])
+labels3 = bt_labels(scores3)
+assert labels3[0] == 1, f"y_2 should win (score 0.2 vs 0.8), got label {labels3[0]}"
+
+# Test 4: shape matches input N
+scores4 = np.array([[0.5, 0.9], [0.7, 0.3], [0.6, 0.4]])
+labels4 = bt_labels(scores4)
+assert labels4.shape == (3,), f"Output shape should be (3,), got {labels4.shape}"
+
+# Test 5: batch correctness
+scores5 = np.array([[0.9, 0.3], [0.4, 0.8], [0.5, 0.5]])
+labels5 = bt_labels(scores5)
+expected = np.array([0, 1, 1])
+assert np.array_equal(labels5, expected), f"Expected {expected}, got {labels5}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the RL-CAI phase, AI-generated preference labels replace human labels. What is the main practical concern with using AI-generated labels for harmlessness preference training?", options: [
+    { text: "The labeling model (SL-CAI) may inherit biases or blind spots from its own training — if it was fine-tuned to avoid certain harms but not others, its preference labels will systematically miss harmful content it was not trained to recognize. This could create a feedback loop where the policy is trained to satisfy a biased preference model.", correct: true, explain: "This is the central limitation of RLAIF. The AI labeler's judgment is only as good as its own training. Unlike human raters who bring diverse life experience and cultural context, the SL-CAI model can only label harms it has been exposed to. Systematic blind spots in the labeler propagate into the trained policy." },
+    { text: "AI-generated labels are too noisy because the language model samples randomly, making the preference signal indistinguishable from random labeling.", correct: false, explain: "The AI labels are not random — they are the model's argmax or high-probability response conditioned on the principle and the two responses. The concern is systematic bias (consistent errors in one direction), not random noise (errors that cancel out over large datasets)." },
+    { text: "AI-generated labels are faster but require 10× more labeled examples than human labels to achieve the same preference model quality.", correct: false, explain: "No such 10× factor is established in the CAI paper. The quality comparison between AI and human labels depends on the specific harm type, not a fixed multiplicative factor. AI labels can even outperform human labels on some dimensions if the labeling model is well-calibrated." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2212.08073.pdf" title="Constitutional AI: Harmlessness from AI Feedback (Bai et al. 2022)" />
+
+Suggested reading order: §1 (Introduction — motivation for replacing human harmful-output labels) → §3 (Supervised Learning from AI Feedback — the critique-revision data generation loop and SL-CAI fine-tuning) → §4 (Reinforcement Learning from AI Feedback — RLAIF preference labeling, preference model training, and PPO against the PM).
+
+</StageSection>
