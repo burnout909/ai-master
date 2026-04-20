@@ -1,0 +1,240 @@
+---
+slug: dropout
+title: "Dropout: A Simple Way to Prevent Neural Networks from Overfitting"
+authors: "Srivastava, Hinton, Krizhevsky, Sutskever, Salakhutdinov"
+year: 2014
+era: foundations
+arxivId: "1207.0580"
+estimatedMinutes: 40
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { DropoutMask } from "../../components/widgets/DropoutMask.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+When you train a large network long enough on limited data, neurons start to collude. Unit A fires whenever unit B fires; together they memorize a specific pattern in the training set — a texture, a noise artifact, an ID of one example. This is **co-adaptation**: neurons rely on each other rather than each learning something independently useful. The result is a network that looks brilliant on training data and flails on anything new.
+
+**Dropout's insight:** randomly silence a different random subset of neurons on every forward pass. Now unit A can never count on B being present. Each unit is forced to be useful on its own. At test time every neuron is active, but we scale outputs down by `keep_prob` to match expected training activations.
+
+<PredictThenReveal client:load predictPrompt="Before the widget: if you set keep_prob = 0.5, how many of the 36 neurons do you expect to survive on a given pass? Type your guess.">
+  **18 neurons on average** — each of the 36 is independently kept with probability 0.5, so the expected count is 36 × 0.5 = 18. But the actual count varies around that mean each time you resample. That variance is the point: the network sees a different sparse subnetwork every step.
+</PredictThenReveal>
+
+Play with the widget. Drag `keep_prob`, hit **Resample** several times, and toggle **Show expected value**.
+
+<DropoutMask client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing: at keep_prob = 0.9 vs keep_prob = 0.1, how does the surviving network's capacity change? When would you choose each extreme?">
+  At keep_prob = 0.9 the network is almost intact each pass — mild regularization, used for output layers or when data is plentiful. At keep_prob = 0.1 only ~4 of 36 neurons survive — extreme regularization, rarely used because it kills most capacity. The paper typically uses 0.5 for hidden layers and 0.8 for inputs.
+</PredictThenReveal>
+
+<SrsCard id="dropout-coadaptation" paper="dropout" prompt="What problem does dropout solve, and how?" answer="Co-adaptation: neurons memorize training noise together. Dropout randomly zeros units each pass, forcing every neuron to be independently useful rather than relying on peers." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does dropout act as an ensemble method?", options: [
+    { text: "Each training step samples a different sparse subnetwork, averaging over exponentially many models", correct: true, explain: "With n units, there are 2^n possible masks — dropout implicitly trains all of them with shared weights." },
+    { text: "It trains multiple copies of the network in parallel", correct: false, explain: "There is still one set of weights; the ensemble effect is implicit." },
+    { text: "It reduces the learning rate per neuron adaptively", correct: false, explain: "That describes Adam/RMSProp, not dropout." },
+  ]},
+  { prompt: "At test time with standard (non-inverted) dropout, outputs are scaled by:", options: [
+    { text: "keep_prob", correct: true, explain: "Multiplying by keep_prob at test time matches the expected activation during training when the neuron is present with probability keep_prob." },
+    { text: "1 / keep_prob", correct: false, explain: "1/keep_prob is the inverted-dropout train-time scale. At test time no scaling is applied in inverted dropout." },
+    { text: "No scaling needed — outputs are identical", correct: false, explain: "Without scaling, test-time activations would be keep_prob times larger than train-time expected values." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Let <Math expr="p" /> be the **keep probability**. During training, each unit <Math expr="h_i" /> is multiplied by a Bernoulli random variable <Math expr="r_i \sim \text{Bernoulli}(p)" />:
+
+<Math display expr="\tilde{h}_i = r_i \cdot h_i, \quad r_i \sim \text{Bernoulli}(p)" />
+
+At test time all units are active. To match the expected activation during training:
+
+<Math display expr="h_i^{\text{test}} = p \cdot h_i^{\text{no-dropout}}" />
+
+**Inverted dropout** — the modern variant — moves the scaling to train time so the test forward pass needs no modification:
+
+<Math display expr="\tilde{h}_i^{\text{inverted}} = \frac{r_i}{p} \cdot h_i" />
+
+Now <Math expr="\mathbb{E}[\tilde{h}_i^{\text{inverted}}] = \frac{p}{p} h_i = h_i" />, matching the test activation exactly.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does dividing by p at train time mean test time needs no scaling?",
+    options: [
+      { text: "E[r_i / p] = p/p = 1, so the expected activation equals the full activation h_i", correct: true, explain: "By linearity of expectation: E[r_i/p · h_i] = (E[r_i]/p) · h_i = (p/p) · h_i = h_i. Test-time forward pass is identical to the unscaled full network." },
+      { text: "Dividing by p makes the mask values larger, compensating for dropped units", correct: false, explain: "The surviving units are scaled up (by 1/p), but the reasoning is about expectation matching, not compensation." },
+      { text: "It forces the output to sum to 1", correct: false, explain: "Dropout is not a normalizing operation; softmax does that." },
+    ],
+  }}
+  revealExpr="\mathbb{E}\!\left[\frac{r_i}{p}\right] = \frac{\mathbb{E}[r_i]}{p} = \frac{p}{p} = 1 \implies \mathbb{E}[\tilde{h}_i^{\text{inv}}] = h_i"
+/>
+
+**Ensemble interpretation:** with <Math expr="n" /> hidden units, there are <Math expr="2^n" /> possible subnetworks (masks). Dropout weight-shares all <Math expr="2^n" /> models — the test-time network with scaled weights approximates averaging their predictions.
+
+<DerivationStep client:load
+  question={{
+    prompt: "If a layer has n = 100 neurons and keep_prob = 0.5, how many distinct subnetworks are implicitly trained?",
+    options: [
+      { text: "2^100 ≈ 1.27 × 10^30", correct: true, explain: "Each neuron is independently included/excluded: 2 choices per neuron, so 2^n total subnetworks." },
+      { text: "100", correct: false, explain: "That would be if only one neuron varied at a time." },
+      { text: "50 (the expected number kept)", correct: false, explain: "50 is the expected count per sample, not the number of distinct masks." },
+    ],
+  }}
+  revealExpr="|\mathcal{M}| = 2^n = 2^{100} \approx 1.27 \times 10^{30}"
+/>
+
+<SrsCard id="dropout-inverted" paper="dropout" prompt="What is inverted dropout and why is it preferred?" answer="Inverted dropout divides by keep_prob at train time (not multiply at test time), so the test forward pass is unchanged. It avoids any test-time modification and is the standard in modern frameworks." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In inverted dropout with keep_prob = 0.5, a surviving unit's activation is multiplied by:", options: [
+    { text: "2 (= 1/0.5)", correct: true, explain: "Dividing by p = 0.5 doubles the surviving activations, keeping expected activation unchanged." },
+    { text: "0.5", correct: false, explain: "0.5 is the standard (non-inverted) test-time scale, not the inverted train-time scale." },
+    { text: "1 (unchanged)", correct: false, explain: "Without scaling, the expected activation would be halved (only half survive)." },
+  ]},
+  { prompt: "The ensemble of 2^n subnetworks all share:", options: [
+    { text: "The same weight values W", correct: true, explain: "Dropout does not create n copies of weights — all subnetworks are evaluated with the same W, just with different masks." },
+    { text: "Separate weight matrices", correct: false, explain: "That would be actual ensemble training — computationally far more expensive." },
+    { text: "The same random seed", correct: false, explain: "Each pass samples a fresh mask from a different seed." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the steps of inverted dropout (train-time forward pass) in correct order:
+
+<LineReorder client:load lines={[
+  "Sample Bernoulli mask: mask[i] = Bernoulli(keep_prob) for each unit i",
+  "Multiply activations element-wise: h̃ = h * mask",
+  "Scale surviving units: h̃ = h̃ / keep_prob",
+  "Continue forward pass with h̃ as the layer output",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def dropout(h, keep_prob, training):
+    if not training:
+        return h
+    mask = bernoulli(keep_prob, shape=h.shape)
+    return (h * mask) / _______    # ← fill
+```
+
+<FillBlank answer="keep_prob" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why is the mask re-sampled on EVERY forward pass rather than once per epoch?", options: [
+    { text: "Each pass trains a different sparse subnetwork, providing gradient diversity", correct: true, explain: "Re-sampling each step is what creates the implicit ensemble — the same example is seen through many different sparse networks." },
+    { text: "The mask must change to prevent weight decay", correct: false, explain: "Dropout and weight decay are orthogonal regularizers." },
+    { text: "The mask must match the batch size", correct: false, explain: "Masks are per-unit, not per-example (each example in the batch gets its own independent mask)." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement **inverted dropout** in NumPy.
+
+<HintFade client:load
+  hints={[
+    "You need a binary mask the same shape as x. Use np.random.rand and compare to keep_prob.",
+    "np.random.rand(x.shape) < keep_prob gives a boolean mask — multiply x by it to zero out dropped units.",
+    "After masking, divide by keep_prob (not multiply) to keep the expected activation equal to x.",
+  ]}
+  solutionCode={`import numpy as np
+
+def dropout(x, keep_prob, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+    mask = rng.random(x.shape) < keep_prob
+    return (x * mask) / keep_prob`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def dropout(x, keep_prob, rng=None):
+    # TODO: implement inverted dropout
+    # 1. Sample a Bernoulli mask (same shape as x)
+    # 2. Zero out dropped units
+    # 3. Scale surviving units by 1/keep_prob
+    pass
+
+# Quick sanity
+rng = np.random.default_rng(42)
+x = np.ones(10)
+out = dropout(x, 0.5, rng=rng)
+print("output:", out)
+print("mean:", out.mean())
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+def dropout(x, keep_prob, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+    mask = rng.random(x.shape) < keep_prob
+    return (x * mask) / keep_prob
+`}
+  testCode={`import numpy as np
+# Shape preservation
+rng = np.random.default_rng(0)
+x = np.ones((4, 8))
+out = dropout(x, 0.5, rng=rng)
+assert out.shape == (4, 8), f"Expected shape (4,8), got {out.shape}"
+
+# Large-n mean test: expected value should be ~1.0 with keep_prob=0.5 inverted
+rng2 = np.random.default_rng(1)
+big = np.ones(10000)
+result = dropout(big, 0.5, rng=rng2)
+assert abs(result.mean() - 1.0) < 0.05, f"Mean should be ~1.0, got {result.mean():.4f}"
+
+# Fixed seed reproducibility
+rng3 = np.random.default_rng(42)
+rng4 = np.random.default_rng(42)
+a = dropout(np.ones(20), 0.5, rng=rng3)
+b = dropout(np.ones(20), 0.5, rng=rng4)
+assert np.allclose(a, b), "Same seed should give same result"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In inverted dropout, what value do surviving units take when x = 1 and keep_prob = 0.5?", options: [
+    { text: "2.0 (= 1 / 0.5)", correct: true, explain: "Surviving units are scaled up by 1/keep_prob = 2, so E[output] = 0.5 × 2 = 1.0 = original activation." },
+    { text: "0.5", correct: false, explain: "0.5 is the standard-dropout test-time scale, not the inverted train-time value." },
+    { text: "1.0 (unchanged)", correct: false, explain: "Without scaling, dropped units would halve the expected activation." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1207.0580.pdf" title="Dropout" />
+
+Suggested reading order: §1 Introduction (co-adaptation motivation) → §3 Model Description (Bernoulli mask + scaling) → §4 Learning Dropout Nets (inverted form and hyperparameters) → §6 Experiments (ImageNet, CIFAR, speech).
+
+</StageSection>
