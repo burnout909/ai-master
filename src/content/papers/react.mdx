@@ -1,0 +1,317 @@
+---
+slug: react
+title: "ReAct: Synergizing Reasoning and Acting in Language Models"
+authors: "Yao et al."
+year: 2022
+era: agents
+arxivId: "2210.03629"
+estimatedMinutes: 60
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { ReActLoop } from "../../components/widgets/ReActLoop.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+A pure-reasoning LLM can hallucinate facts; a pure-tool-calling agent gets lost without reasoning. What if we interleave?
+
+**Setup:** imagine an LLM answering "What is the population of Paris?" In Chain-of-Thought (CoT) mode it reasons entirely from memory. In Act-only mode it calls tools but without a guiding plan. ReAct alternates between *thinking* and *acting*, letting each inform the other.
+
+<PredictThenReveal client:load predictPrompt="Predict: what's the most common failure mode of CoT-only on factual questions?">
+  **Confident wrong answers from stale or missing knowledge.** CoT reasons entirely from the model's parameters — if those parameters contain outdated facts or simply never saw a particular piece of data, the model will produce a fluent, confident answer that is factually wrong. There is no grounding mechanism to catch or correct the error mid-reasoning.
+</PredictThenReveal>
+
+Now step through the widget below. Select a mode (CoT, Act, ReAct) and click **Step** to advance the trace.
+
+<ReActLoop client:load />
+
+<PredictThenReveal client:load predictPrompt="Step through CoT, Act-only, and ReAct modes. Which one arrives at the right Paris population, and why?">
+  **ReAct** — its thoughts direct tool calls and then integrate their results. CoT guesses ~2M from stale parameters. Act-only issues a bare search for "Paris" and gets an ambiguous disambiguation page (Paris, Texas), losing the thread. ReAct first thinks "I need the capital of France," confirms it is Paris via a focused search, then immediately thinks "now fetch Paris's population" and retrieves the precise 2023 figure.
+</PredictThenReveal>
+
+<SrsCard id="react-core-intuition" paper="react" prompt="What is the core intuition behind ReAct?" answer="Interleave reasoning (Thought) and action (Action + Observation) in the same context. Thoughts direct which tool to call; observations inform subsequent thoughts. Neither alone is sufficient — CoT hallucinates, Act-only loses the plan." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the primary failure mode of CoT-only on knowledge-intensive tasks?", options: [
+    { text: "Hallucination — confident wrong answers from stale or absent knowledge", correct: true, explain: "Without any grounding mechanism, CoT relies entirely on parametric knowledge, which can be outdated or missing." },
+    { text: "Slow inference — CoT requires too many forward passes", correct: false, explain: "CoT actually uses a single forward pass per reasoning step; speed is not the core issue." },
+    { text: "It cannot produce structured output", correct: false, explain: "CoT can produce structured output; factual grounding is the fundamental problem." },
+  ]},
+  { prompt: "Why does Act-only fail on multi-step factual tasks in the widget trace?", options: [
+    { text: "Without a reasoning step, a disambiguation result causes the agent to follow the wrong path", correct: true, explain: "Act-only searches for Paris, gets a disambiguation page, and then calls the wrong tool — no Thought step to interpret and redirect." },
+    { text: "Act-only cannot call search tools", correct: false, explain: "Act-only calls tools freely — that is all it does. The missing component is reasoning." },
+    { text: "Act-only always returns None", correct: false, explain: "It returns an answer — just the wrong one due to a reasoning gap." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+ReAct is formalized as a policy conditioned on an interleaved context. At each step _t_, the agent samples an action from:
+
+<Math display expr="a_t \sim \pi_\theta(a_t \mid c_t)" />
+
+where the context grows with every step:
+
+<Math display expr="c_t = (o_1, a_1, \ldots, a_{t-1}, o_t)" />
+
+The action space is extended: <Math expr="a_t \in \mathcal{A} \cup \mathcal{L}" /> where **𝒜** is the set of tool calls (search, lookup, etc.) and **ℒ** is the space of natural-language thoughts. A thought action is executed purely inside the model's context — it does not interact with any external environment.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Which is true about a thought action a_t ∈ ℒ?",
+    options: [
+      { text: "It doesn't change external state — only appends to context", correct: true, explain: "A Thought is an internal reasoning step. The environment (search engine, calculator, etc.) is untouched; the context simply grows by one entry." },
+      { text: "It terminates the episode and returns the answer", correct: false, explain: "A Finish action terminates the episode. A Thought is a non-terminal reasoning step." },
+      { text: "It is penalized in the loss because it wastes tokens", correct: false, explain: "ReAct does not penalize Thought tokens — they are encouraged as the mechanism for grounded reasoning." },
+    ],
+  }}
+  revealExpr="a_t \in \mathcal{L} \implies \text{env state unchanged,} \ c_{t+1} = (c_t, a_t)"
+/>
+
+**Token cost:** ReAct uses 2–5× more tokens than Act-only because each trajectory contains interleaved Thought steps that do not directly produce observations. This is a deliberate trade-off: more tokens per query buys substantially better factual accuracy and fewer dead-end action sequences.
+
+<SrsCard id="react-thought-action" paper="react" prompt="What happens to environment state when a_t is a Thought action (a_t ∈ ℒ)?" answer="Nothing. Thoughts are internal — they only append to context c_t. Only tool-call actions (a_t ∈ 𝒜) trigger environment interactions and produce observations." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the ReAct formalism, what distinguishes a Thought action from a tool-call action?", options: [
+    { text: "A Thought modifies only the context; a tool call also produces an external observation", correct: true, explain: "a_t ∈ ℒ appends to c_t with no environment side-effect. a_t ∈ 𝒜 triggers a tool and returns an observation o_{t+1}." },
+    { text: "A Thought uses a different model than a tool call", correct: false, explain: "Both are generated by the same LLM policy π_θ — they differ in whether they interact with external state." },
+    { text: "Thoughts are sampled deterministically while tool calls are stochastic", correct: false, explain: "Both are sampled from the same policy; neither is categorically deterministic." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the steps of the ReAct loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Initialize context c with the user query",
+  "Generate next token block from LLM given c",
+  "Parse block as Thought | Action | Finish",
+  "If Action: run tool, observe result, append (Action, Observation) to c",
+  "If Thought: append Thought to c",
+  "If Finish: return the answer",
+]} />
+
+What keyword terminates the ReAct loop and returns a final answer?
+
+<FillBlank answer="Finish" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the ReAct loop, what should happen after parsing a block as an Action?", options: [
+    { text: "Run the tool with the action's arguments, obtain an observation, and append both to context", correct: true, explain: "The tool call returns an Observation which is appended to c so the next Thought can use it." },
+    { text: "Return the action payload directly as the final answer", correct: false, explain: "Only a Finish block terminates the loop. An Action triggers a tool call and continues." },
+    { text: "Discard the action and regenerate", correct: false, explain: "The action is executed — discarding it would break the grounding loop." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a minimal ReAct scaffold. The loop drives a scripted LM through Thought / Action / Finish blocks, calling a canned search tool for grounding.
+
+<HintFade client:load
+  hints={[
+    "Parse with a simple regex on ^(Thought|Action|Finish):",
+    "The loop appends the Observation after an Action",
+    "Terminate when you see Finish and return the payload",
+  ]}
+  solutionCode={`import re
+
+CANNED = {
+    "france capital": "Paris",
+    "paris, france population": "~2,102,650 (2023)",
+}
+def search(q):
+    for k, v in CANNED.items():
+        if k in q.lower():
+            return v
+    return "no results"
+
+# Scripted LM returns a pre-canned sequence based on iteration count
+SCRIPT = [
+    "Thought: I need the capital of France first.",
+    "Action: search(\\"France capital\\")",
+    "Thought: Now fetch Paris's population.",
+    "Action: search(\\"Paris, France population\\")",
+    "Finish: ~2,102,650 (2023)",
+]
+
+def scripted_lm(context, _state={"i": 0}):
+    out = SCRIPT[_state["i"]]
+    _state["i"] += 1
+    return out
+
+def parse_block(text):
+    m = re.match(r"^(Thought|Action|Finish):\\s*(.*)$", text.strip(), re.DOTALL)
+    if not m:
+        return ("Unknown", text)
+    return (m.group(1), m.group(2))
+
+def run(query, lm, tool):
+    c = [("Query", query)]
+    for _ in range(10):  # max steps
+        block = lm(c)
+        kind, payload = parse_block(block)
+        if kind == "Finish":
+            return payload
+        if kind == "Action":
+            m = re.match(r'(\\w+)\\("?(.*?)"?\\)', payload)
+            args = m.group(2) if m else payload
+            obs = tool(args)
+            c.append(("Action", payload))
+            c.append(("Observation", obs))
+        else:
+            c.append((kind, payload))
+    return None`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import re
+
+CANNED = {
+    "france capital": "Paris",
+    "paris, france population": "~2,102,650 (2023)",
+}
+def search(q):
+    for k, v in CANNED.items():
+        if k in q.lower():
+            return v
+    return "no results"
+
+SCRIPT = [
+    "Thought: I need the capital of France first.",
+    'Action: search("France capital")',
+    "Thought: Now fetch Paris's population.",
+    'Action: search("Paris, France population")',
+    "Finish: ~2,102,650 (2023)",
+]
+
+def scripted_lm(context, _state={"i": 0}):
+    out = SCRIPT[_state["i"]]
+    _state["i"] += 1
+    return out
+
+def parse_block(text):
+    # TODO: match ^(Thought|Action|Finish): and return (kind, payload)
+    pass
+
+def run(query, lm, tool):
+    # TODO: implement the ReAct loop
+    # c = [("Query", query)]
+    # loop up to 10 steps: generate block, parse, dispatch Action/Thought/Finish
+    pass
+
+# Quick test
+answer = run("Population of Paris?", scripted_lm, search)
+print("answer:", answer)
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import re
+
+CANNED = {
+    "france capital": "Paris",
+    "paris, france population": "~2,102,650 (2023)",
+}
+def search(q):
+    for k, v in CANNED.items():
+        if k in q.lower():
+            return v
+    return "no results"
+
+SCRIPT = [
+    "Thought: I need the capital of France first.",
+    'Action: search("France capital")',
+    "Thought: Now fetch Paris's population.",
+    'Action: search("Paris, France population")',
+    "Finish: ~2,102,650 (2023)",
+]
+
+def scripted_lm(context, _state={"i": 0}):
+    out = SCRIPT[_state["i"]]
+    _state["i"] += 1
+    return out
+
+def parse_block(text):
+    m = re.match(r"^(Thought|Action|Finish):\\s*(.*)$", text.strip(), re.DOTALL)
+    if not m:
+        return ("Unknown", text)
+    return (m.group(1), m.group(2))
+
+def run(query, lm, tool):
+    c = [("Query", query)]
+    for _ in range(10):
+        block = lm(c)
+        kind, payload = parse_block(block)
+        if kind == "Finish":
+            return payload
+        if kind == "Action":
+            m = re.match(r'(\\w+)\\("?(.*?)"?\\)', payload)
+            args = m.group(2) if m else payload
+            obs = tool(args)
+            c.append(("Action", payload))
+            c.append(("Observation", obs))
+        else:
+            c.append((kind, payload))
+    return None
+`}
+  testCode={`answer = run("Population of Paris?", scripted_lm, search)
+assert answer.strip() == "~2,102,650 (2023)", f"bad answer: {answer}"
+# Verify at least one Thought and one Action appeared in context
+c = [("Query", "test")]
+# rebuild to inspect — rerun with fresh state
+scripted_lm.__defaults__[0]["i"] = 0
+for _ in range(10):
+    block = scripted_lm(c)
+    kind, payload = parse_block(block)
+    if kind == "Finish": break
+    if kind == "Action":
+        c.append(("Action", payload))
+        c.append(("Observation", search(payload)))
+    else:
+        c.append((kind, payload))
+kinds = {k for k, _ in c}
+assert "Thought" in kinds, "missing Thought"
+assert "Action" in kinds, "missing Action"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the ReAct scaffold, what does the loop do when it encounters a Finish block?", options: [
+    { text: "Returns the payload immediately as the final answer", correct: true, explain: "Finish is the termination condition — the payload is the answer the agent has reasoned and grounded to." },
+    { text: "Calls the tool one more time to verify the answer", correct: false, explain: "Finish is terminal; no further tool calls are made." },
+    { text: "Appends Finish to context and continues", correct: false, explain: "Continuing past a Finish block would ignore the agent's conclusion." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2210.03629.pdf" title="ReAct" />
+
+Suggested reading order: §2 ReAct → §3 Knowledge-intensive tasks → §4 Interactive decision-making.
+
+</StageSection>
