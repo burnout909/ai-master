@@ -1,0 +1,253 @@
+---
+slug: bert
+title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+authors: "Devlin, Chang, Lee, Toutanova"
+year: 2018
+era: transformer
+arxivId: "1810.04805"
+estimatedMinutes: 55
+prerequisites: ["transformer"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { MaskPatterns } from "../../components/widgets/MaskPatterns.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before BERT, the dominant language model paradigm was **unidirectional**: GPT reads tokens strictly left-to-right (causal masking), meaning when predicting or encoding position i, the model only sees tokens to the left. This is natural for generation, but it's a significant limitation for understanding — knowing both the left and right context of a word is crucial for tasks like question answering and named entity recognition.
+
+BERT's key insight: instead of predicting the next token, **mask out random tokens and predict them using the full surrounding context** — bidirectional attention in both directions simultaneously. This is called **Masked Language Modeling (MLM)**. On top of that, BERT adds **Next Sentence Prediction (NSP)**: given two sentences A and B, predict whether B is the actual next sentence in the corpus or a random one. Together, these two pretraining objectives allow BERT to build rich, context-aware representations of text.
+
+<PredictThenReveal client:load predictPrompt="Why can't GPT-style (left-to-right) pretraining learn bidirectional context, even if you stack many layers?">
+  Causal masking is applied at the attention layer: each token's attention is literally blocked from attending to any future position. No amount of depth overcomes this architectural constraint — the information never enters the computation graph. BERT removes causal masking entirely during pretraining, letting every token attend to every other token.
+</PredictThenReveal>
+
+Interact with the widget below to see how MLM masking works versus the causal (GPT-style) masking pattern. Toggle between modes and observe which positions can attend to which.
+
+<MaskPatterns client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: BERT replaces only 80% of the selected masked tokens with [MASK]. The other 10% get a random token, and 10% stay unchanged. Why not replace all 100% with [MASK]?">
+  At fine-tuning time, the input never contains literal [MASK] tokens — [MASK] is a pretraining-only artifact. If the model only ever sees [MASK] tokens in the positions it needs to predict, it learns to activate its prediction machinery only when [MASK] is present, causing a train-test mismatch. The 10% random and 10% unchanged tokens force the model to maintain a useful representation for every token, since any token could be the one it needs to predict.
+</PredictThenReveal>
+
+<SrsCard id="bert-bidirectional" paper="bert" prompt="How does BERT achieve bidirectional context, and why can't a standard left-to-right LM do the same?" answer="BERT uses Masked Language Modeling: randomly masks 15% of input tokens and trains the model to predict them using all surrounding tokens (both left and right context). A left-to-right LM uses causal attention masking that structurally blocks future tokens, so no amount of depth enables it to see rightward context." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What architectural change allows BERT to use bidirectional context?", options: [
+    { text: "BERT removes causal attention masking, allowing every token to attend to every other token in both directions", correct: true, explain: "Without causal masking, each token's attention can incorporate context from the full sequence — left and right simultaneously." },
+    { text: "BERT uses two separate LSTMs running in opposite directions and concatenates their hidden states", correct: false, explain: "That is ELMo's approach (biLSTM). BERT is a Transformer with full (non-causal) self-attention, a fundamentally different design." },
+    { text: "BERT processes the sequence twice — once left-to-right and once right-to-left — then averages the representations", correct: false, explain: "BERT makes a single forward pass with non-causal self-attention. Every layer sees the full sequence simultaneously." },
+  ]},
+  { prompt: "What are the two pretraining objectives in the original BERT paper?", options: [
+    { text: "Masked Language Modeling (MLM) and Next Sentence Prediction (NSP)", correct: true, explain: "MLM trains token-level representations by predicting masked tokens; NSP trains sentence-level representations by predicting whether two sentences are consecutive." },
+    { text: "Causal language modeling and sentence classification", correct: false, explain: "Causal (left-to-right) language modeling is GPT's objective. BERT uses masked (bidirectional) language modeling." },
+    { text: "Masked Language Modeling and span boundary prediction", correct: false, explain: "Span boundary prediction is used in SpanBERT, a later variant. The original BERT uses NSP as its second objective." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+BERT's pretraining loss is the sum of two cross-entropy terms. First, **MLM loss** sums over the set M of masked positions:
+
+<Math display expr="L_\text{MLM} = -\sum_{i \in M} \log p(x_i \mid x_{\setminus M})" />
+
+Here the conditioning context is the full input with masked positions replaced — the model predicts the original token x_i using all non-masked context. Second, **NSP loss** uses the [CLS] token's pooled representation:
+
+<Math display expr="L_\text{NSP} = -\log p(\text{IsNext} \mid [\text{CLS}])" />
+
+The total pretraining loss is simply their sum:
+
+<Math display expr="L = L_\text{MLM} + L_\text{NSP}" />
+
+<DerivationStep client:load
+  question={{
+    prompt: "BERT masks 15% of tokens, not 50%. If you masked half the tokens, the model would see less context per prediction. What is the fundamental signal/noise tradeoff that pins the masking rate near 15%?",
+    options: [
+      { text: "Higher masking rate means fewer context tokens available per prediction (more noise), while lower rate means fewer training signal positions per sequence (less signal). 15% balances useful context against training signal density.", correct: true, explain: "With 50% masking the model has only 50% of the sequence as context — too little to make reliable predictions. With 1% masking almost all tokens are always visible (rich context) but almost no tokens produce gradient signal. 15% is empirically near the optimal balance." },
+      { text: "15% is determined by the vocabulary size: mask rate = 1/vocabulary_size ≈ 15% for a 30k vocab", correct: false, explain: "Masking rate has nothing to do with vocabulary size. It is a hyperparameter tuned for the signal/noise tradeoff." },
+      { text: "15% ensures exactly one masked token per typical 7-word span, making the task a cloze test", correct: false, explain: "The 15% rate is not derived from a span-length target. It is chosen to balance prediction signal with sufficient context." },
+    ],
+  }}
+  revealExpr="\text{mask rate} \approx 15\%: \text{ balance context (noise } \downarrow\text{) vs. signal density}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Of the 15% selected positions, BERT replaces 80% with [MASK], 10% with a random token, and 10% unchanged. Why are the 10% random and 10% unchanged cases necessary?",
+    options: [
+      { text: "They prevent the model from only activating its prediction pathway when it sees a literal [MASK] token, closing the train-test mismatch since [MASK] never appears at fine-tuning time", correct: true, explain: "If 100% of selected positions were [MASK], the model could short-circuit: produce a good representation for visible tokens and only compute a real prediction when [MASK] appears. The 20% non-[MASK] cases force the model to produce a useful representation for every token unconditionally." },
+      { text: "They regularize the token embeddings by adding noise, similar to how dropout prevents co-adaptation of neurons", correct: false, explain: "While there is a loose analogy to dropout, the stated motivation in the BERT paper is specifically the train-test distribution mismatch for the [MASK] token." },
+      { text: "They ensure the model cannot memorize the training corpus by seeing random tokens", correct: false, explain: "Anti-memorization is not the purpose here. The 80/10/10 split addresses the representation quality for unmasked tokens at fine-tuning time." },
+    ],
+  }}
+  revealExpr="\text{80\% [MASK] + 10\% random + 10\% unchanged} \Rightarrow \text{no train-test [MASK] mismatch}"
+/>
+
+<SrsCard id="bert-mlm-loss" paper="bert" prompt="Write the MLM loss for BERT over masked positions M." answer="L_MLM = -Σ_{i ∈ M} log p(x_i | x_{∖M}). The model predicts each masked token x_i using bidirectional context from all unmasked positions." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the MLM loss, x_{∖M} denotes the input with masked positions replaced. What token fills those masked positions in the input to the model?", options: [
+    { text: "A special [MASK] token (80% of the time), a random vocabulary token (10%), or the original unchanged token (10%)", correct: true, explain: "BERT uses a 80/10/10 scheme to prevent train-test mismatch: most selected positions get [MASK], a small fraction get random tokens or remain unchanged." },
+    { text: "The zero vector — masked positions are replaced by a zero embedding", correct: false, explain: "Zero embeddings are not used. BERT injects a dedicated [MASK] token embedding." },
+    { text: "The [PAD] token, consistent with how padding is handled in batch processing", correct: false, explain: "[PAD] is used for sequence-length padding, not for masking. MLM uses the [MASK] special token." },
+  ]},
+  { prompt: "Which token's representation is used for the NSP classification head?", options: [
+    { text: "The [CLS] token at position 0, whose final hidden state is treated as a sentence-pair aggregate representation", correct: true, explain: "BERT prepends a special [CLS] token. After all Transformer layers, its hidden state captures a pooled representation suitable for sentence-level classification tasks including NSP." },
+    { text: "The [SEP] token between the two sentences, since it separates the pair", correct: false, explain: "[SEP] marks segment boundaries but is not used as the classification representation. [CLS] is the designated aggregate token." },
+    { text: "The average of all final-layer hidden states across both sentences", correct: false, explain: "Mean-pooling of all tokens is a common fine-tuning trick (mean pooling BERT) but the original NSP head uses only the [CLS] token." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the BERT pretraining step in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample a batch of sentence pairs (A, B) from the corpus",
+  "Randomly select 15% of token positions; replace with [MASK] / random / unchanged per 80/10/10 rule",
+  "Forward pass through all Transformer layers to get contextual hidden states",
+  "Compute L_MLM = -Σ log p(x_i | x_{∖M}) over masked positions + L_NSP from [CLS]",
+  "Backpropagate total loss L = L_MLM + L_NSP and update all parameters",
+]} />
+
+Fill the blank in the masking pseudocode:
+
+```text
+for i in selected_positions:
+    r = random()
+    if r < 0.80:
+        tokens[i] = ______
+    elif r < 0.90:
+        tokens[i] = random_vocab_token()
+    # else: leave unchanged
+```
+
+<FillBlank answer="[MASK]" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the BERT training loop, the masking decision (which 15% of positions to mask) is made once per sequence before the forward pass. Why is the mask re-sampled each epoch rather than fixed across training?", options: [
+    { text: "Re-sampling creates different masking patterns across epochs, so the model sees each token in both masked and unmasked context over training, improving generalisation", correct: true, explain: "If the mask were fixed, the model would always predict the same tokens from the same context. Dynamic masking means every token eventually serves as both context and prediction target." },
+    { text: "Re-sampling is a data-augmentation trick to multiply the effective training set size", correct: false, explain: "While re-sampling does increase variety, the primary motivation stated in the BERT paper is ensuring each token is seen in both roles (context and target) over training." },
+    { text: "Fixed masks cause gradient vanishing because the same parameters receive the same gradient every step", correct: false, explain: "Gradient vanishing is related to architecture depth and activations, not to mask patterns. The re-sampling motivation is representational coverage." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the BERT 15% masking procedure in NumPy. Given an array of token IDs and a `mask_token_id`, return a new array where approximately 15% of positions are selected. Of those selected positions: 80% become `mask_token_id`, 10% become a random token from the vocabulary, and 10% stay unchanged. Also return a boolean array indicating which positions were selected (for computing the MLM loss).
+
+<HintFade client:load
+  hints={[
+    "Use np.random.rand(len(tokens)) < 0.15 to get a boolean mask of selected positions. Then iterate (or use np.where) over those positions to apply the 80/10/10 rule.",
+    "For each selected position, draw a uniform random float. If < 0.8: replace with mask_token_id. If < 0.9: replace with np.random.randint(0, vocab_size). Otherwise: leave unchanged.",
+    "Final structure: selected = np.random.rand(n) < 0.15. For i in np.where(selected)[0]: r = np.random.rand(); if r < 0.8: out[i] = mask_token_id; elif r < 0.9: out[i] = randint(vocab_size). Return out, selected.",
+  ]}
+  solutionCode={`import numpy as np
+
+def bert_masking(tokens, mask_token_id, vocab_size, mask_prob=0.15, seed=None):
+    rng = np.random.default_rng(seed)
+    out = tokens.copy()
+    selected = rng.random(len(tokens)) < mask_prob
+    for i in np.where(selected)[0]:
+        r = rng.random()
+        if r < 0.80:
+            out[i] = mask_token_id
+        elif r < 0.90:
+            out[i] = rng.integers(0, vocab_size)
+        # else: leave unchanged
+    return out, selected`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def bert_masking(tokens, mask_token_id, vocab_size, mask_prob=0.15, seed=None):
+    # TODO: implement
+    # Returns (masked_tokens, selected_mask)
+    # selected_mask[i] = True if position i was chosen for prediction
+    pass
+
+tokens = np.array([101, 2054, 2003, 1996, 3007, 1997, 2605, 102])
+masked, selected = bert_masking(tokens, mask_token_id=103, vocab_size=30522, seed=42)
+print("original:", tokens)
+print("masked:  ", masked)
+print("selected positions:", np.where(selected)[0])
+print("fraction masked:", selected.mean().round(2))
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def bert_masking(tokens, mask_token_id, vocab_size, mask_prob=0.15, seed=None):
+    rng = np.random.default_rng(seed)
+    out = tokens.copy()
+    selected = rng.random(len(tokens)) < mask_prob
+    for i in np.where(selected)[0]:
+        r = rng.random()
+        if r < 0.80:
+            out[i] = mask_token_id
+        elif r < 0.90:
+            out[i] = rng.integers(0, vocab_size)
+    return out, selected
+`}
+  testCode={`import numpy as np
+
+# Test 1: output length same as input
+tokens = np.arange(100)
+masked, selected = bert_masking(tokens, mask_token_id=103, vocab_size=30522, seed=0)
+assert len(masked) == len(tokens), f"Output length {len(masked)} != input length {len(tokens)}"
+
+# Test 2: roughly 15% of positions selected (with reasonable tolerance over 1000 tokens)
+tokens_large = np.arange(1000)
+_, selected_large = bert_masking(tokens_large, mask_token_id=103, vocab_size=30522, seed=1)
+frac = selected_large.mean()
+assert 0.10 <= frac <= 0.20, f"Expected ~15% selected, got {frac:.2%}"
+
+# Test 3: selected is a boolean array
+assert selected_large.dtype == bool, "selected should be a boolean array"
+
+# Test 4: unselected positions are unchanged
+tokens2 = np.arange(200)
+masked2, selected2 = bert_masking(tokens2, mask_token_id=103, vocab_size=30522, seed=7)
+unselected = ~selected2
+assert np.all(masked2[unselected] == tokens2[unselected]), "Unselected positions must remain unchanged"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the masking implementation, why do we use rng.random() < 0.80 for [MASK] and rng.random() < 0.90 for random token (instead of e.g. separate 0.80 and 0.10 comparisons)?", options: [
+    { text: "Drawing one float and checking two thresholds (< 0.80 and < 0.90) correctly partitions [0,1) into 80% / 10% / 10% regions with a single random number per position", correct: true, explain: "P(r < 0.80) = 80%, P(0.80 ≤ r < 0.90) = 10%, P(r ≥ 0.90) = 10%. One draw, three outcomes." },
+    { text: "Two separate draws of np.random() < 0.80 and np.random() < 0.10 are equivalent and more readable", correct: false, explain: "Two independent draws would give incorrect probabilities: P(first < 0.80 AND second < 0.10) ≠ 10%. The chained threshold approach is the correct method." },
+    { text: "np.random.choice with p=[0.8, 0.1, 0.1] is the only correct implementation", correct: false, explain: "np.random.choice with explicit probabilities works too, but the chained threshold approach is equivalent and avoids the overhead of constructing a probability array." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1810.04805.pdf" title="BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding" />
+
+Suggested reading order: §3.1 (Model Architecture — the Transformer encoder stack and input representations) → §3.2 (Pre-training BERT — MLM and NSP objectives with the 80/10/10 masking scheme) → §5 (Ablation Studies — shows the contribution of each pretraining task and the bidirectionality).
+
+</StageSection>

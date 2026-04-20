@@ -27,7 +27,7 @@ export const PAPERS_META: PaperMeta[] = [
 
   // ——— Transformer Era ———
   { slug: "transformer", title: "Attention Is All You Need", authors: "Vaswani et al.", year: 2017, era: "transformer", arxivId: "1706.03762", summary: "Self-attention-only architecture replaces RNNs.", status: "implemented", influencedBy: ["bahdanau", "seq2seq"] },
-  { slug: "bert",        title: "BERT: Pre-training of Deep Bidirectional Transformers", authors: "Devlin et al.", year: 2018, era: "transformer", arxivId: "1810.04805", summary: "Masked-LM pretraining + fine-tuning.", status: "stub", influencedBy: ["transformer"] },
+  { slug: "bert",        title: "BERT: Pre-training of Deep Bidirectional Transformers", authors: "Devlin et al.", year: 2018, era: "transformer", arxivId: "1810.04805", summary: "Masked-LM pretraining + fine-tuning.", status: "implemented", influencedBy: ["transformer"] },
   { slug: "gpt2",        title: "Language Models are Unsupervised Multitask Learners", authors: "Radford et al.", year: 2019, era: "transformer", summary: "Scaling decoder-only LMs to 1.5B params.", status: "stub", influencedBy: ["transformer"] },
   { slug: "gpt3",        title: "Language Models are Few-Shot Learners", authors: "Brown et al.", year: 2020, era: "transformer", arxivId: "2005.14165", summary: "175B-param LM with in-context learning.", status: "stub", influencedBy: ["gpt2"] },
   { slug: "vit",         title: "An Image is Worth 16x16 Words", authors: "Dosovitskiy et al.", year: 2020, era: "transformer", arxivId: "2010.11929", summary: "Transformers for image classification at scale.", status: "stub", influencedBy: ["transformer"] },
