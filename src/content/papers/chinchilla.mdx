@@ -1,0 +1,270 @@
+---
+slug: chinchilla
+title: "Training Compute-Optimal Large Language Models"
+authors: "Hoffmann et al."
+year: 2022
+era: transformer
+arxivId: "2203.15556"
+estimatedMinutes: 45
+prerequisites: ["transformer", "gpt3"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { ChinchillaCurve } from "../../components/widgets/ChinchillaCurve.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before Chinchilla, the dominant belief about large language model scaling came from Kaplan et al. (2020): parameters matter far more than training tokens. GPT-3 (175B parameters, 300B tokens) was the embodiment of that belief — an enormous model trained on a comparatively small dataset. The Kaplan scaling laws suggested that for a fixed compute budget you should spend almost all of it on parameters, keeping the token count roughly constant.
+
+Hoffmann et al. (2022) ran a much more careful set of scaling experiments and reached a different conclusion. When you hold compute fixed and vary both the number of parameters N and the number of tokens D simultaneously, you find an interior optimum: the loss is minimized when N and D grow at roughly the **same rate** — not 10:1 as Kaplan implied, but close to 1:1. The paper named their compute-optimal 70B model "Chinchilla" and showed it outperforms the 280B Gopher model on almost every benchmark — using exactly the same compute budget — simply because Gopher was trained on too few tokens.
+
+<PredictThenReveal client:load predictPrompt="Before playing with the widget: if you increase log₁₀(params) while keeping log₁₀(tokens) fixed, what do you expect to happen to the loss? Does it always decrease?">
+  Loss is a function of both N and D. Increasing N while holding D fixed does reduce loss — but with diminishing returns. The term A/N^α in the parametric fit shrinks, but B/D^β stays constant. At some point adding more parameters yields almost no gain because the data term B/D^β dominates. That is the core message: a bigger model needs more tokens to justify its size.
+</PredictThenReveal>
+
+**Interact with the widget:** drag both sliders and watch how the predicted loss changes. Notice that for a fixed log₁₀(C) (shown in the stats panel), moving tokens toward log₁₀(D) = log₁₀(N) + 1.3 (roughly D = 20·N) lowers the loss more than simply adding parameters. Toggle "Show Chinchilla-optimal" to see the green marker at D* = 20·N.
+
+<ChinchillaCurve client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing: for a fixed compute budget C = 6ND, why does there exist a best (N, D) pair rather than 'more params always wins'?">
+  Because loss has two data-dependent and parameter-dependent terms that trade off. A/N^alpha rewards more parameters; B/D^beta rewards more data. Given C = 6ND, increasing N forces D = C/(6N) to decrease, eventually making the data term worse faster than the parameter term improves. The loss surface is bowl-shaped along the compute isocurve, so a finite optimum exists.
+</PredictThenReveal>
+
+<SrsCard id="chinchilla-rule" paper="chinchilla" prompt="What is the Chinchilla scaling rule of thumb for compute-optimal training?" answer="For a given compute budget C, the optimal model size N* and dataset size D* satisfy D* ≈ 20·N*. Equivalently, parameters and tokens should scale at roughly a 1:1 ratio as compute increases, not 10:1 as earlier Kaplan scaling laws suggested." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What was wrong with the Kaplan et al. (2020) scaling prescription that Chinchilla corrected?", options: [
+    { text: "Kaplan recommended allocating most compute to parameters and relatively few tokens, leading to under-trained models like GPT-3 and Gopher that could have achieved much better loss with more data at the same compute cost", correct: true, explain: "Kaplan's experiments did not carefully control compute while varying both N and D simultaneously. Their setup inadvertently confounded the two. Chinchilla's Approach 3 fixes this by training many models across a grid of N and D at iso-compute levels, revealing the roughly symmetric optimal." },
+    { text: "Kaplan's laws were derived on vision tasks and did not transfer to language modelling", correct: false, explain: "Kaplan et al. studied language model scaling explicitly (GPT-2 family). The issue was not the domain but the experimental design — they did not hold compute fixed while varying both N and D together." },
+    { text: "Kaplan recommended far more tokens than parameters, so models were data-rich but too small to generalise", correct: false, explain: "It is the opposite: Kaplan recommended prioritising parameters over tokens. The result was large models trained on too little data." },
+  ]},
+  { prompt: "Chinchilla (70B params, 1.4T tokens) vs Gopher (280B params, 300B tokens) — same compute budget. What explains Chinchilla's better performance?", options: [
+    { text: "Chinchilla is closer to the compute-optimal point where D* ≈ 20·N, so given the same FLOPs it achieves lower cross-entropy loss by not wasting compute on a model whose parameters can't be saturated by the available data", correct: true, explain: "Gopher has roughly 4× more parameters but only 0.2× the tokens relative to Chinchilla. Its token count (300B) is far below the Chinchilla-optimal for 280B params (which would be ~5.6T tokens). Chinchilla's 1.4T tokens more closely matches its 70B parameter count, making better use of every FLOP." },
+    { text: "Chinchilla uses a superior architecture with grouped-query attention that Gopher lacks", correct: false, explain: "Both models are dense transformer decoders with standard multi-head attention. The architectural differences are minor; the key distinction is the data-to-parameter ratio during training." },
+    { text: "Gopher was trained with a larger batch size, causing gradient noise that hurt final loss", correct: false, explain: "Batch size differences are not the explanation cited by the Chinchilla paper. The paper's controlled experiments isolate the compute allocation (N vs D) as the causal factor." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The Chinchilla paper fits a parametric model to the observed training loss across hundreds of runs:
+
+<Math display expr="L(N, D) = E + \frac{A}{N^{\alpha}} + \frac{B}{D^{\beta}}" />
+
+Here E is the irreducible entropy of natural language, A/N^alpha captures the contribution from model size, and B/D^beta captures the contribution from dataset size. The fitted constants are approximately A = 406, B = 410, alpha = 0.34, beta = 0.28, E = 1.70.
+
+Given a fixed compute budget C, the total training FLOPs are approximated as:
+
+<Math display expr="C \approx 6 N D" />
+
+so D = C / (6N). Substituting into L(N, D) and minimising over N (equivalently over D, since C is fixed) yields:
+
+<Math display expr="N^* \propto C^{a}, \quad D^* \propto C^{b}, \quad a = \frac{\beta}{\alpha + \beta} \approx 0.46, \quad b = \frac{\alpha}{\alpha + \beta} \approx 0.54" />
+
+Both exponents are near 0.5, confirming the near-symmetric scaling. The ratio D*/N* = 20 follows from plugging the fitted A, B, alpha, beta values into the first-order condition.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Given C = 6ND fixed, substitute D = C/(6N) into L(N,D). Why does an interior minimum in N exist — why doesn't L always decrease as N increases?",
+    options: [
+      { text: "A/N^alpha decreases as N grows but B/D^beta = B(6N/C)^beta increases as N grows because D shrinks, so the two competing terms create a bowl-shaped loss with a finite minimizer", correct: true, explain: "Substituting D = C/(6N) gives L = E + A/N^alpha + B*(6N/C)^beta. The first data term is strictly decreasing in N; the second is strictly increasing in N (since beta > 0). Their sum has a unique interior minimum where dL/dN = 0." },
+      { text: "The loss is bounded below by E so it must eventually level off, creating an apparent minimum", correct: false, explain: "The irreducible entropy E is a constant lower bound, but that alone doesn't explain a minimum — without the competing token term the loss A/N^alpha + E would keep decreasing toward E as N grows. The minimum arises because adding parameters forces fewer tokens under the compute constraint." },
+      { text: "Gradient descent converges to a minimum because the Hessian is positive definite everywhere", correct: false, explain: "The question is about the analytical loss surface L(N,D), not the optimization dynamics of gradient descent. We are looking for the N that minimizes L under the constraint C = 6ND, which is a simple one-variable calculus problem." },
+    ],
+  }}
+  revealExpr="\frac{dL}{dN} = -\frac{\alpha A}{N^{\alpha+1}} + \frac{\beta B \cdot 6^\beta}{C^\beta} N^{\beta - 1} = 0 \;\Rightarrow\; N^* \propto C^{\beta/(\alpha+\beta)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Plugging alpha = 0.34 and beta = 0.28 into the optimality condition gives D*/N* ≈ 20. Which direction does the exponent asymmetry push — should the optimal model have more parameters or more tokens per FLOP?",
+    options: [
+      { text: "Because b = alpha/(alpha+beta) ≈ 0.54 > a ≈ 0.46, D* grows slightly faster than N* with compute, so for large C the optimal model is slightly more data-heavy than parameter-heavy", correct: true, explain: "D* scales as C^0.54 and N* scales as C^0.46. For every 10x increase in compute, N* grows by 10^0.46 ≈ 2.9x while D* grows by 10^0.54 ≈ 3.5x. This small asymmetry compounds: at GPT-3 compute levels it implies D* ≈ 20·N* tokens per parameter, meaning most LLMs before Chinchilla were severely undertrained." },
+      { text: "Because alpha > beta is false (both exponents are less than 1), the optimal ratio is always exactly 1:1", correct: false, explain: "alpha = 0.34 and beta = 0.28, so alpha > beta. This means b = alpha/(alpha+beta) > 0.5 > a = beta/(alpha+beta). The asymmetry is small but meaningful and produces D*/N* ≈ 20, not 1." },
+      { text: "The asymmetry is negligible; the main finding is that both should scale as C^0.5 symmetrically", correct: false, explain: "The exponents a ≈ 0.46 and b ≈ 0.54 are close to 0.5 but not equal. The small asymmetry is what gives the rule D* = 20·N rather than D* = N. The paper emphasises this ratio as a practical prescription." },
+    ],
+  }}
+  revealExpr="D^* \approx 20\, N^* \;\Longleftarrow\; \frac{D^*}{N^*} = \left(\frac{A\,\alpha}{B\,\beta}\right)^{1/(\alpha+\beta)} \approx 20"
+/>
+
+<SrsCard id="chinchilla-loss-fn" paper="chinchilla" prompt="Write the Chinchilla parametric loss function and explain each term." answer="L(N,D) = E + A/N^alpha + B/D^beta. E is irreducible entropy (~1.70). A/N^alpha (A≈406, alpha≈0.34) is the contribution from model capacity — more parameters reduces this. B/D^beta (B≈410, beta≈0.28) is the contribution from data quantity — more tokens reduces this. At compute-optimal N and D both terms contribute roughly equally to the reducible loss." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The Chinchilla paper fits L(N,D) = E + A/N^alpha + B/D^beta. What does E represent and why can't it be reduced by adding more parameters or data?", options: [
+    { text: "E is the irreducible entropy of the data distribution — the minimum possible cross-entropy loss for predicting natural text even with a perfect model, arising from genuine ambiguity and randomness in language", correct: true, explain: "No model, however large or trained on however much data, can predict the next token perfectly in natural language — there is genuine stochasticity (multiple valid continuations). E ≈ 1.70 nats is the fitted lower bound; both A/N^alpha and B/D^beta approach zero as N,D→infinity, leaving only E." },
+    { text: "E is a regularisation term added to prevent the loss from going negative during optimisation", correct: false, explain: "E is not a regularisation term — it is a fitted constant that captures the irreducible noise in the data. Cross-entropy loss is always non-negative, so there is no risk of it going negative without E." },
+    { text: "E represents the embedding dimensionality effect: larger d_model reduces E, which is why scaling width helps", correct: false, explain: "E is a single scalar constant in the parametric fit; it does not depend on architectural choices like embedding dimensionality. The N^alpha term captures capacity effects including width and depth." },
+  ]},
+  { prompt: "Why does computing D* = C / (6 N*) require knowing the fitted exponents alpha and beta, rather than just the compute budget C?", options: [
+    { text: "Because N* itself depends on alpha and beta through N* ∝ C^(beta/(alpha+beta)), so D* = C/(6N*) inherits that dependence — you cannot find D* from C alone without the scaling exponents", correct: true, explain: "If you only know C, you know the constraint 6ND = C but not where on the compute isocurve the loss is minimised. The minimum location is determined by the ratio of the two exponents alpha and beta from the parametric fit." },
+    { text: "You need alpha and beta only to estimate the irreducible loss E; the optimal D* is always C/6 regardless of model size", correct: false, explain: "D* = C/6 would imply N* = 1, which is nonsensical. D* = C/(6N*) and N* depends on both C and the exponents alpha and beta." },
+    { text: "Alpha and beta are needed to rescale C from FLOPs to token-equivalents for different hardware types", correct: false, explain: "Alpha and beta are properties of the loss function, not of hardware. The FLOP approximation C ≈ 6ND is hardware-independent; the exponents come from fitting L(N,D) to empirical training runs." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the four steps of a compute-optimal training recipe in the correct order:
+
+<LineReorder client:load lines={[
+  "Choose compute budget C (FLOPs available for training)",
+  "Compute optimal N* = (C/6)^(beta/(alpha+beta)) * constant and D* = C / (6 * N*)",
+  "Train a model with N* parameters on D* tokens, monitoring loss",
+  "Measure final loss L and compare to the parametric prediction L(N*, D*)",
+]} />
+
+Fill in the blank: given optimal parameter count N* and compute budget C, the implied token count D* is:
+
+```text
+def chinchilla_tokens(N_star, C):
+    # N_star: optimal parameter count
+    # C: total compute budget in FLOPs
+    D_star = ______
+    return D_star
+```
+
+<FillBlank answer="C / (6 * N_star)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pseudocode, why is the factor 6 used in C = 6 * N * D?", options: [
+    { text: "A standard transformer forward pass requires roughly 2 FLOPs per parameter per token (multiply-accumulate = 2 ops), and backpropagation requires approximately 2x the forward-pass cost, giving ~6 FLOPs per parameter per token total for a training step", correct: true, explain: "The 6x rule of thumb: forward pass ≈ 2ND FLOPs (each of N parameters sees D tokens and costs ~2 ops), backward pass ≈ 4ND FLOPs (2x forward for parameter and activation gradients). Total ≈ 6ND. This is an approximation; the paper discusses its accuracy in Appendix F." },
+    { text: "The factor 6 accounts for 6 layers of a standard transformer (the minimum needed for language modelling)", correct: false, explain: "The factor 6 is a FLOP count approximation based on the cost of matrix multiplications in the forward and backward passes. It is independent of the number of layers — a 96-layer model and a 6-layer model with the same total parameters have the same ~6ND cost." },
+    { text: "The 6 is a safety margin so that reported compute budgets account for failed runs and hyperparameter searches", correct: false, explain: "The 6x factor is a mathematical derivation of FLOPs per parameter per token, not a safety margin. It comes from counting multiply-accumulate operations in forward and backward passes." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a Chinchilla loss predictor in NumPy. Given parameter count N and token count D, compute the predicted loss using the parametric fit. Then, given a fixed compute budget C and a range of N values, find the D implied by D = C/(6N) and the corresponding predicted loss, and verify that the minimum is achieved near D* = 20*N.
+
+<HintFade client:load
+  hints={[
+    "Start by implementing compute_loss(N, D) using the constants E=1.70, A=406, B=410, alpha=0.34, beta=0.28. Then implement chinchilla_optimal(C) that searches over a range of N values to find the one minimizing compute_loss(N, C/(6*N)).",
+    "For a range of N values (e.g., np.logspace(8, 11, 200)), compute D = C / (6 * N) for each, then losses = compute_loss(N_vals, D_vals). Use np.argmin to find the optimal index. The optimal D*/N* ratio should be close to 20.",
+    "Full solution: E,A,B,a,b = 1.70,406,410,0.34,0.28; def compute_loss(N,D): return E + A/N**a + B/D**b; def chinchilla_optimal(C): N_vals=np.logspace(8,11,500); D_vals=C/(6*N_vals); losses=compute_loss(N_vals,D_vals); idx=np.argmin(losses); return N_vals[idx], D_vals[idx], losses[idx]",
+  ]}
+  solutionCode={`import numpy as np
+
+E, A, B, alpha, beta = 1.70, 406, 410, 0.34, 0.28
+
+def compute_loss(N, D):
+    return E + A / N**alpha + B / D**beta
+
+def chinchilla_optimal(C):
+    N_vals = np.logspace(8, 11, 500)
+    D_vals = C / (6 * N_vals)
+    losses = compute_loss(N_vals, D_vals)
+    idx = np.argmin(losses)
+    return N_vals[idx], D_vals[idx], losses[idx]`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+E, A, B, alpha, beta = 1.70, 406, 410, 0.34, 0.28
+
+def compute_loss(N, D):
+    # TODO: return E + A/N^alpha + B/D^beta
+    pass
+
+def chinchilla_optimal(C):
+    # TODO: sweep N, compute D = C/(6*N), return (N*, D*, L*)
+    pass
+
+# GPT-3 compute budget: C = 6 * 175e9 * 300e9
+C_gpt3 = 6 * 175e9 * 300e9
+N_star, D_star, L_star = chinchilla_optimal(C_gpt3)
+print(f"N* = {N_star:.2e}, D* = {D_star:.2e}, ratio D*/N* = {D_star/N_star:.1f}")
+print(f"Optimal loss: {L_star:.4f}")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+E, A, B, alpha, beta = 1.70, 406, 410, 0.34, 0.28
+
+def compute_loss(N, D):
+    return E + A / N**alpha + B / D**beta
+
+def chinchilla_optimal(C):
+    N_vals = np.logspace(8, 11, 500)
+    D_vals = C / (6 * N_vals)
+    losses = compute_loss(N_vals, D_vals)
+    idx = np.argmin(losses)
+    return N_vals[idx], D_vals[idx], losses[idx]
+`}
+  testCode={`import numpy as np
+
+E, A, B, alpha, beta = 1.70, 406, 410, 0.34, 0.28
+
+def compute_loss(N, D):
+    return E + A / N**alpha + B / D**beta
+
+def chinchilla_optimal(C):
+    N_vals = np.logspace(8, 11, 500)
+    D_vals = C / (6 * N_vals)
+    losses = compute_loss(N_vals, D_vals)
+    idx = np.argmin(losses)
+    return N_vals[idx], D_vals[idx], losses[idx]
+
+# Test 1: loss is decreasing in both N and D within realistic ranges
+N0, D0 = 1e9, 1e10
+assert compute_loss(2e9, D0) < compute_loss(N0, D0), "Loss should decrease as N increases"
+assert compute_loss(N0, 2e10) < compute_loss(N0, D0), "Loss should decrease as D increases"
+
+# Test 2: loss is always above the irreducible floor E
+assert compute_loss(1e12, 1e15) > E - 1e-6, "Loss must stay above irreducible floor E"
+
+# Test 3: GPT-3 compute level — D*/N* ratio should be close to 20
+C_gpt3 = 6 * 175e9 * 300e9
+N_star, D_star, L_star = chinchilla_optimal(C_gpt3)
+ratio = D_star / N_star
+assert 10 <= ratio <= 40, f"D*/N* ratio should be near 20, got {ratio:.1f}"
+
+# Test 4: GPT-3 actual config is suboptimal vs compute-optimal
+L_gpt3_actual = compute_loss(175e9, 300e9)
+assert L_gpt3_actual > L_star, f"GPT-3 actual loss {L_gpt3_actual:.4f} should exceed optimal {L_star:.4f}"
+
+# Test 5: Chinchilla actual config is closer to optimal
+L_chinchilla_actual = compute_loss(70e9, 1.4e12)
+assert L_chinchilla_actual < L_gpt3_actual, "Chinchilla loss should be lower than GPT-3 loss at same compute"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the chinchilla_optimal function, why do we search over N using np.logspace rather than np.linspace?", options: [
+    { text: "Parameter counts span many orders of magnitude (10^8 to 10^11), so a logarithmic grid places equal resolution at every decade, whereas a linear grid would pack nearly all points near the maximum N and leave the small-N region unresolved", correct: true, explain: "np.logspace(8, 11, 500) places 500 equally-spaced points in log-scale between 1e8 and 1e11. np.linspace would place most points in the 10^10–10^11 range, missing the minimum if it falls at lower N. Logarithmic spacing is standard when variables span multiple orders of magnitude." },
+    { text: "np.logspace is faster than np.linspace for large arrays because it avoids integer overflow", correct: false, explain: "Both numpy functions are vectorised and comparably fast. The reason for logspace is resolution across decades, not computational speed." },
+    { text: "The Chinchilla loss function L(N,D) is only defined for N values that are exact powers of 10", correct: false, explain: "L(N,D) = E + A/N^alpha + B/D^beta is defined for any positive real N and D. np.logspace is chosen for numerical resolution reasons, not because of any restriction on valid N values." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2203.15556.pdf" title="Training Compute-Optimal Large Language Models (Chinchilla)" />
+
+Suggested reading order: §3 (Approach — overview of the three methods used to estimate optimal compute allocation) → §3.1 (Approach 1, 2, 3 — IsoFLOP profiles, parametric modelling, and optimal frontier fitting) → §4 (Results — Chinchilla vs Gopher/GPT-3/Megatron on downstream benchmarks).
+
+</StageSection>

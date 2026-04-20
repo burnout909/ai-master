@@ -32,7 +32,7 @@ export const PAPERS_META: PaperMeta[] = [
   { slug: "gpt3",        title: "Language Models are Few-Shot Learners", authors: "Brown et al.", year: 2020, era: "transformer", arxivId: "2005.14165", summary: "175B-param LM with in-context learning.", status: "implemented", influencedBy: ["gpt2"] },
   { slug: "vit",         title: "An Image is Worth 16x16 Words", authors: "Dosovitskiy et al.", year: 2020, era: "transformer", arxivId: "2010.11929", summary: "Transformers for image classification at scale.", status: "implemented", influencedBy: ["transformer"] },
   { slug: "clip",        title: "Learning Transferable Visual Models From Natural Language Supervision", authors: "Radford et al.", year: 2021, era: "transformer", arxivId: "2103.00020", summary: "Contrastive image-text pretraining.", status: "implemented", influencedBy: ["transformer", "vit"] },
-  { slug: "chinchilla",  title: "Training Compute-Optimal Large Language Models", authors: "Hoffmann et al.", year: 2022, era: "transformer", arxivId: "2203.15556", summary: "Compute-optimal scaling laws.", status: "stub", influencedBy: ["gpt3"] },
+  { slug: "chinchilla",  title: "Training Compute-Optimal Large Language Models", authors: "Hoffmann et al.", year: 2022, era: "transformer", arxivId: "2203.15556", summary: "Compute-optimal scaling laws.", status: "implemented", influencedBy: ["gpt3"] },
 
   // ——— Generative Models ———
   { slug: "ddpm",        title: "Denoising Diffusion Probabilistic Models", authors: "Ho, Jain, Abbeel", year: 2020, era: "generative", arxivId: "2006.11239", summary: "Diffusion models as generative modeling.", status: "implemented" },
