@@ -1,0 +1,244 @@
+---
+slug: adam
+title: "Adam: A Method for Stochastic Optimization"
+authors: "Kingma, Ba"
+year: 2014
+era: foundations
+arxivId: "1412.6980"
+estimatedMinutes: 40
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { AdamMoments } from "../../components/widgets/AdamMoments.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+SGD uses one global learning rate for every parameter. That works badly when the loss landscape is ill-conditioned: parameters with consistently large gradients overshoot, while parameters with tiny gradients barely move. Adding momentum smooths noisy gradients by accumulating a running average — but it still uses the same step size everywhere.
+
+**Adam's insight:** maintain two running statistics per parameter. The first moment **m** is a momentum estimate of the gradient. The second moment **v** tracks the average squared gradient — a proxy for curvature. Dividing by √v gives each parameter an automatic per-parameter learning rate: large gradients compress the step, small gradients enlarge it.
+
+<PredictThenReveal client:load predictPrompt="Before the widget: if β₂ is very close to 1.0, what do you expect v to do over many steps — stabilise quickly or slowly? Type your guess.">
+  **Stabilise slowly.** β₂ close to 1.0 means the running average forgets old squared gradients very slowly (each new gradient contributes only (1−β₂) ≈ 0.001 weight). v converges to the true average, but it takes many steps. The advantage is a stable, low-variance estimate; the disadvantage is it adapts sluggishly to sudden gradient changes.
+</PredictThenReveal>
+
+Now play with the widget. Drag β₂ toward 1.0 and watch how v changes across steps. Then set step = 1 and toggle bias correction off.
+
+<AdamMoments client:load />
+
+<PredictThenReveal client:load predictPrompt="At step 1 with bias correction OFF, the displayed update looks very small. Why? What would it look like if you turned bias correction back ON?">
+  At step 1, m₁ = (1−β₁)·g₁ and v₁ = (1−β₂)·g₁². Both are multiplied by tiny factors (≈0.1 and 0.001), so the raw update m/(√v + ε) can still be reasonable — but it is **not** the true gradient. With bias correction ON, both m and v are divided by (1−β₁^t) and (1−β₂^t) respectively, which at t=1 are exactly (1−β₁) and (1−β₂). This inflates them back to g₁ and g₁², recovering the actual gradient as the first update.
+</PredictThenReveal>
+
+<SrsCard id="adam-second-moment" paper="adam" prompt="What does the second moment v in Adam estimate, and how does it produce per-parameter learning rates?" answer="v is an exponential moving average of squared gradients, tracking the scale of recent gradients per parameter. Dividing by √v shrinks the step for high-curvature parameters and enlarges it for low-curvature ones, giving automatic per-parameter learning-rate adaptation." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does Adam outperform SGD on ill-conditioned losses?", options: [
+    { text: "It adapts the step size per parameter via the second moment estimate", correct: true, explain: "√v normalises each parameter's gradient, reducing sensitivity to different gradient scales across parameters." },
+    { text: "It uses a higher learning rate globally", correct: false, explain: "Adam's default α=0.001 is often lower than typical SGD rates; the gain is adaptivity, not magnitude." },
+    { text: "It uses second-order (Hessian) information explicitly", correct: false, explain: "Adam approximates curvature cheaply via squared gradients, not a full Hessian." },
+  ]},
+  { prompt: "What is the purpose of the first moment m in Adam?", options: [
+    { text: "Momentum: smooth noisy gradient estimates across steps", correct: true, explain: "m is an EMA of raw gradients, reducing variance from stochastic mini-batches." },
+    { text: "Normalise the gradient to unit length", correct: false, explain: "Normalisation is done by v, not m." },
+    { text: "Compute the learning rate schedule", correct: false, explain: "The learning rate α is a separate hyperparameter; m provides the direction." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+At each step t, given gradient <Math expr="g_t" />, Adam maintains:
+
+<Math display expr="m_t = \beta_1 m_{t-1} + (1-\beta_1)\,g_t" />
+<Math display expr="v_t = \beta_2 v_{t-1} + (1-\beta_2)\,g_t^2" />
+
+Both are initialised at zero. Because they start at zero, early estimates are biased toward zero. Bias-corrected estimates:
+
+<Math display expr="\hat{m}_t = \frac{m_t}{1-\beta_1^t}, \qquad \hat{v}_t = \frac{v_t}{1-\beta_2^t}" />
+
+The parameter update:
+
+<Math display expr="\theta_t \leftarrow \theta_{t-1} - \alpha \cdot \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \varepsilon}" />
+
+Defaults: β₁ = 0.9, β₂ = 0.999, ε = 10⁻⁸, α = 0.001.
+
+<DerivationStep client:load
+  question={{
+    prompt: "At t=1, m₁ = (1−β₁)g₁. With β₁=0.9, m₁ = 0.1·g₁. Why does this under-represent g₁?",
+    options: [
+      { text: "Because (1−β₁) = 0.1 is tiny, so m₁ is only 10% of the actual gradient", correct: true, explain: "The EMA initialised at zero effectively dilutes the first gradient by the factor (1−β₁). Without correction we would take a step 10× too small." },
+      { text: "Because g₁ itself is unreliable at the start of training", correct: false, explain: "The gradient might be noisy, but that is not the reason m₁ under-represents it. The issue is the zero initialisation of the EMA." },
+      { text: "Because β₁ is close to 1 so m₁ averages many past gradients", correct: false, explain: "At t=1 there are no past gradients — the only reason m₁ is small is the zero initialisation." },
+    ],
+  }}
+  revealExpr="m_1 = (1-\beta_1)\,g_1 = 0.1\,g_1 \ll g_1"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "What does dividing m₁ by (1−β₁^1) give?",
+    options: [
+      { text: "Exactly g₁ — it perfectly corrects the zero-initialisation bias at t=1", correct: true, explain: "1−β₁^1 = 1−β₁ = 0.1, so m̂₁ = 0.1g₁ / 0.1 = g₁. The bias-corrected estimate equals the raw gradient on the first step." },
+      { text: "A smaller value, because dividing by a fraction > 1", correct: false, explain: "1−β₁^1 = 0.1 is less than 1, so dividing by it amplifies m₁, not shrinks it." },
+      { text: "Zero — the correction cancels out entirely", correct: false, explain: "The correction un-biases the estimate; it does not zero it out." },
+    ],
+  }}
+  revealExpr="\hat{m}_1 = \frac{m_1}{1-\beta_1^1} = \frac{(1-\beta_1)g_1}{1-\beta_1} = g_1"
+/>
+
+<SrsCard id="adam-bias-correction" paper="adam" prompt="Why does Adam divide m and v by (1−β^t), and what does this correction converge to at large t?" answer="Both m and v are initialised at zero, biasing early estimates toward zero. Dividing by (1−β^t) un-biases them. As t→∞, β^t→0 and 1−β^t→1, so the correction vanishes — it only matters in the first few steps." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "As t grows large, the bias correction factor (1−β^t) approaches:", options: [
+    { text: "1 — the correction becomes negligible", correct: true, explain: "β < 1 so β^t → 0 as t → ∞, meaning 1−β^t → 1 and the corrected estimate equals the raw estimate." },
+    { text: "0 — the correction grows unboundedly", correct: false, explain: "The correction factor is in the denominator; approaching 0 would mean division by zero, not smaller updates." },
+    { text: "β — it asymptotes at the hyperparameter value", correct: false, explain: "No, it asymptotes at 1 regardless of β." },
+  ]},
+  { prompt: "ε in the Adam update θ ← θ − α·m̂/(√v̂ + ε) serves to:", options: [
+    { text: "Prevent division by zero when v̂ ≈ 0", correct: true, explain: "Parameters with near-zero gradient history would produce √v̂ ≈ 0; ε ensures numerical stability." },
+    { text: "Scale the learning rate globally", correct: false, explain: "ε is typically 1e-8 and does not meaningfully change the effective step size — that is α's job." },
+    { text: "Add L2 regularisation", correct: false, explain: "Weight decay / L2 regularisation is a separate modification (AdamW), not ε." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of one Adam iteration in the correct order:
+
+<LineReorder client:load lines={[
+  "Compute gradient g_t = ∇L(θ_{t-1})",
+  "Update first moment: m_t = β1·m_{t-1} + (1−β1)·g_t",
+  "Update second moment: v_t = β2·v_{t-1} + (1−β2)·g_t²",
+  "Bias-correct: m̂ = m_t / (1−β1^t),  v̂ = v_t / (1−β2^t)",
+  "Apply update: θ_t = θ_{t-1} − α·m̂ / (√v̂ + ε)",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def adam_step(g, m, v, t, beta1, beta2, alpha, eps):
+    m = beta1 * m + (1 - beta1) * g
+    v = beta2 * v + (1 - beta2) * g**2
+    m_hat = m / _______    # ← fill (bias correction for m)
+    v_hat = v / (1 - beta2**t)
+    theta_update = alpha * m_hat / (v_hat**0.5 + eps)
+    return m, v, theta_update
+```
+
+<FillBlank answer="1 - beta1**t" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "If you forget the bias correction step, what goes wrong in the first few iterations?", options: [
+    { text: "Updates are far too small because m and v are biased toward zero", correct: true, explain: "Zero-initialised EMA with (1−β) ≈ 0.1/0.001 fraction weight means the first few m and v values are tiny, making updates tiny — effectively a near-zero learning rate early on." },
+    { text: "The optimizer diverges immediately due to large updates", correct: false, explain: "The opposite: updates are too small, not too large. Divergence would require step sizes much larger than intended." },
+    { text: "No visible effect — bias correction only matters theoretically", correct: false, explain: "The effect is empirically significant in the first ~1/(1−β) steps, which can be thousands of steps for β₂=0.999." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement one Adam step in NumPy. Starting from zero-initialised m and v, after one step with gradient g=1.0 and α=0.001, the parameter update should be approximately −α (i.e. θ ≈ −0.001).
+
+<HintFade client:load
+  hints={[
+    "You need to update m and v as EMAs of g and g², then bias-correct both before computing the step.",
+    "Bias correction: m_hat = m / (1 - beta1**t) and v_hat = v / (1 - beta2**t). Use Python's ** for exponentiation.",
+    "The update is alpha * m_hat / (np.sqrt(v_hat) + eps). Return the new theta (theta - update), plus updated m and v.",
+  ]}
+  solutionCode={`import numpy as np
+
+def adam_step(theta, m, v, g, t, alpha=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+    m = beta1 * m + (1 - beta1) * g
+    v = beta2 * v + (1 - beta2) * g ** 2
+    m_hat = m / (1 - beta1 ** t)
+    v_hat = v / (1 - beta2 ** t)
+    theta = theta - alpha * m_hat / (np.sqrt(v_hat) + eps)
+    return theta, m, v`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def adam_step(theta, m, v, g, t, alpha=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+    # TODO: implement one Adam step
+    # 1. Update first moment m
+    # 2. Update second moment v
+    # 3. Bias-correct both
+    # 4. Compute and apply update to theta
+    # Return (theta, m, v)
+    pass
+
+# Quick sanity: one step from zero init with g=1
+theta, m, v = 0.0, 0.0, 0.0
+theta, m, v = adam_step(theta, m, v, g=1.0, t=1)
+print(f"theta after 1 step: {theta:.6f}  (expected ≈ -0.001)")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+def adam_step(theta, m, v, g, t, alpha=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+    m = beta1 * m + (1 - beta1) * g
+    v = beta2 * v + (1 - beta2) * g ** 2
+    m_hat = m / (1 - beta1 ** t)
+    v_hat = v / (1 - beta2 ** t)
+    theta = theta - alpha * m_hat / (np.sqrt(v_hat) + eps)
+    return theta, m, v
+`}
+  testCode={`import numpy as np
+
+# Test 1: after 1 step from zero init with g=1, theta ≈ -alpha
+theta, m, v = 0.0, 0.0, 0.0
+theta, m, v = adam_step(theta, m, v, g=1.0, t=1)
+assert abs(theta - (-0.001)) < 1e-4, f"Expected theta ≈ -0.001, got {theta:.6f}"
+
+# Test 2: moments are updated correctly after step 1
+_, m1, v1 = adam_step(0.0, 0.0, 0.0, g=2.0, t=1)
+assert abs(m1 - 0.2) < 1e-9, f"m should be 0.2, got {m1}"
+assert abs(v1 - 0.004) < 1e-9, f"v should be 0.004, got {v1}"
+
+# Test 3: multiple steps decrease theta (gradient descent direction)
+theta, m, v = 0.0, 0.0, 0.0
+for t in range(1, 11):
+    theta, m, v = adam_step(theta, m, v, g=1.0, t=t)
+assert theta < 0, f"theta should decrease with positive gradients, got {theta}"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does one Adam step with g=1 give θ ≈ −α rather than something else?", options: [
+    { text: "Bias correction at t=1 makes m̂=g and v̂=g², so the update is α·g/(√(g²)+ε) ≈ α·sign(g)", correct: true, explain: "With g=1: m̂₁=1, v̂₁=1, update = α·1/(1+ε) ≈ α. Adam's effective step at t=1 is approximately the learning rate times the sign of the gradient." },
+    { text: "Adam always steps exactly −α regardless of gradient magnitude", correct: false, explain: "Adam's step size depends on the ratio m̂/√v̂. When both equal 1 (unit gradient), the step ≈ α. With different magnitudes, the step changes." },
+    { text: "The EMA weight (1−β₁) cancels the bias correction", correct: false, explain: "They cancel precisely because of bias correction — but the point is that without bias correction the step would be (1−β₁)·α ≈ 0.0001, not α." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1412.6980.pdf" title="Adam" />
+
+Suggested reading order: §2 (Algorithm — the pseudocode box) → §3 (Bias correction derivation) → §6.1 (Experiments on logistic regression and MLPs).
+
+</StageSection>

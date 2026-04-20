@@ -18,7 +18,7 @@ export const PAPERS_META: PaperMeta[] = [
   // ——— DL Foundations ———
   { slug: "alexnet",     title: "ImageNet Classification with Deep CNNs", authors: "Krizhevsky, Sutskever, Hinton", year: 2012, era: "foundations", arxivId: "1102.0183", summary: "CNN + GPU + dropout wins ImageNet, kicks off deep-learning era.", status: "implemented" },
   { slug: "dropout",     title: "Dropout: A Simple Way to Prevent Neural Networks from Overfitting", authors: "Srivastava et al.", year: 2014, era: "foundations", arxivId: "1207.0580", summary: "Random unit-zeroing regularizer.", status: "implemented" },
-  { slug: "adam",        title: "Adam: A Method for Stochastic Optimization", authors: "Kingma, Ba", year: 2014, era: "foundations", arxivId: "1412.6980", summary: "Adaptive moment estimation optimizer.", status: "stub" },
+  { slug: "adam",        title: "Adam: A Method for Stochastic Optimization", authors: "Kingma, Ba", year: 2014, era: "foundations", arxivId: "1412.6980", summary: "Adaptive moment estimation optimizer.", status: "implemented" },
   { slug: "seq2seq",     title: "Sequence to Sequence Learning with Neural Networks", authors: "Sutskever, Vinyals, Le", year: 2014, era: "foundations", arxivId: "1409.3215", summary: "Encoder–decoder RNN for translation.", status: "stub" },
   { slug: "gan",         title: "Generative Adversarial Nets", authors: "Goodfellow et al.", year: 2014, era: "foundations", arxivId: "1406.2661", summary: "Generator vs discriminator minimax game.", status: "stub" },
   { slug: "batchnorm",   title: "Batch Normalization", authors: "Ioffe, Szegedy", year: 2015, era: "foundations", arxivId: "1502.03167", summary: "Reduces internal covariate shift, stabilizes training.", status: "stub" },
