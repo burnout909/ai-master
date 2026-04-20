@@ -1,0 +1,259 @@
+---
+slug: toolformer
+title: "Toolformer: Language Models Can Teach Themselves to Use Tools"
+authors: "Schick, Dwivedi-Yu, Dessì, Raileanu, Lomeli, Zettlemoyer, Cancedda, Scialom"
+year: 2023
+era: agents
+arxivId: "2302.04761"
+estimatedMinutes: 45
+prerequisites: ["gpt3"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { ToolCalls } from "../../components/widgets/ToolCalls.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+By 2023, large language models had shown remarkable capabilities in reasoning and generation — but they had a fundamental blind spot: they were frozen in time, unable to perform reliable arithmetic, and incapable of deterministic lookups. A model trained on data from 2021 has no knowledge of 2022 events. Ask it to compute 17% of 3,847 and it will hallucinate a plausible-sounding but wrong answer. Ask it for today's exchange rates and it fabricates stale numbers with confident prose.
+
+The naive fix — fine-tune the model on tool-augmented data — requires expensive human annotation of when and how to call each tool. Toolformer sidesteps this entirely using **self-supervision**: the model itself generates candidate tool-call insertions into plain text, executes the tools to get results, and keeps only those insertions that measurably reduce the loss on the tokens that follow. The surviving insertions become training data. No human ever labels a single API call. The model teaches itself, from its own predictions about what information would be useful.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: you have a sentence with a blank — 'The revenue grew from 12M to __ this year.' If you match the correct tool (Calculator) vs. a mismatched tool (Translate), what do you expect to see in the perplexity reduction? Will both tools help the model fill the blank?">
+  Only the Calculator call produces a result that actually helps predict the continuation. The Translate tool returns a Spanish word, which is irrelevant to a sentence about revenue — it adds tokens but no signal, so the model's cross-entropy on the following text barely changes. Toolformer's key insight is using this loss reduction as a filter: keep the tool call if and only if it helps the model predict what comes next.
+</PredictThenReveal>
+
+**Interact with the widget:** select a sentence from the dropdown, then try each tool. Observe that only the matched tool (e.g., Calculator for the revenue sentence) produces a large perplexity reduction shown in green. A mismatched tool shows near-zero reduction in red — Toolformer would discard that candidate during training.
+
+<ToolCalls client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: Toolformer uses loss reduction as its only quality signal for tool calls. What is one type of tool call that might slip through this filter incorrectly — i.e., appear useful by this metric but actually be wrong or harmful?">
+  A tool call can reduce loss on the training-text continuation without being factually correct. For example, a Wikipedia search might return an article snippet that happens to match the wording of the training text (high surface overlap, low loss) even if the semantic content is misleading in context. The filter is purely statistical — it measures correlation with the training corpus, not ground-truth correctness. This is why Toolformer still occasionally calls tools inappropriately at inference time: the self-supervised signal is a useful but noisy proxy for actual usefulness.
+</PredictThenReveal>
+
+<SrsCard id="toolformer-core-insight" paper="toolformer" prompt="How does Toolformer acquire tool-use capability without human annotation, and what is the quality signal it uses to filter candidate tool calls?" answer="Toolformer uses self-supervised training: it samples candidate API-call insertions into unlabeled text, executes each call to get its result, and measures the loss reduction on the subsequent tokens with versus without the insertion. Candidates where the loss reduction exceeds a threshold tau are kept; the rest are discarded. The surviving augmented examples become the fine-tuning corpus. No human labeling is required — the model's own language modeling loss serves as the annotation oracle." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Toolformer is trained on a dataset of text manually annotated by humans to indicate where tool calls should be inserted. True or false?", options: [
+    { text: "False. Toolformer uses self-supervised training: the model itself generates candidate API-call positions and arguments, executes the tools, and keeps only those insertions that reduce the language modeling loss on subsequent tokens. No human annotation is involved.", correct: true, explain: "This is the central novelty of Toolformer. The authors start with a pre-trained GPT-J-style model and a small number of in-context tool-call exemplars (5–10 per tool) used only to sample candidates via few-shot prompting. The filtering criterion — loss reduction — is entirely automatic. The resulting training set is large and high-quality without human effort." },
+    { text: "True. Human annotators label each sentence in the training corpus to indicate which tool to call and with what arguments, similar to named-entity recognition annotation.", correct: false, explain: "Human annotation at scale would be prohibitively expensive and is exactly the bottleneck Toolformer is designed to avoid. The self-supervised approach scales to arbitrary amounts of unlabeled text." },
+    { text: "False. Toolformer uses reinforcement learning with a reward signal from a human preference model to learn when to call tools.", correct: false, explain: "RLHF is not used in Toolformer. The training is supervised fine-tuning on the self-generated augmented corpus. The reward signal is the language modeling loss itself, not human preferences." },
+  ]},
+  { prompt: "Toolformer's tool-call filter keeps a candidate insertion only when the inserted call reduces loss on what part of the text?", options: [
+    { text: "The tokens that come after the tool call in the sentence — the continuation. The filter checks whether having the tool result in context lowers the model's cross-entropy on predicting the rest of the sentence.", correct: true, explain: "This is precisely the usefulness criterion. L_plus computes the loss on the continuation when the tool call and its result are present; L_minus computes it without. Only if L_minus - L_plus >= tau is the insertion kept. This makes intuitive sense: a useful tool call should make the continuation more predictable." },
+    { text: "The tokens that come before the tool call — the prefix. The filter checks whether the tool call is consistent with the sentence context seen so far.", correct: false, explain: "The filter does not evaluate consistency with the prefix. It evaluates whether the tool result helps predict the suffix. The prefix is used only to generate the candidate call in the first place (via few-shot prompting)." },
+    { text: "The entire sentence including the tool call itself. The filter minimizes total sentence perplexity.", correct: false, explain: "Minimizing total perplexity would be dominated by the tokens of the tool call string itself, which are long and would inflate the loss. The filter is specifically about the suffix — the tokens that benefit from the tool's information." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+For each position `i` in a text `x` and a candidate tool call `c` with arguments, the model executes the tool to get result `r`. Define two loss values over the continuation tokens `x_{i+1:n}`:
+
+<Math display expr="L_-(x) = \sum_{j=i+1}^{n} -\log p_\theta(x_j \mid x_{1:i})" />
+
+This is the loss on the continuation **without** the tool call — conditioning only on the original prefix.
+
+<Math display expr="L_+(x;\,c,r) = \sum_{j=i+1}^{n} -\log p_\theta(x_j \mid x_{1:i},\, [c \to r],\, x_{i+1:j-1})" />
+
+This is the loss on the continuation **with** the tool call and its result inserted. The insertion `[c -> r]` is placed at position `i`, so the model conditions on both the original prefix and the tool's output.
+
+The **filtering criterion** keeps the insertion if and only if:
+
+<Math display expr="L_-(x)\;-\;L_+(x;\,c,r)\;\geq\;\tau" />
+
+where `tau` is a threshold hyperparameter (set to 1.0 in the paper). Intuitively: if the tool result reduces the cross-entropy on the continuation by at least `tau` nats, the call was useful and the example is kept for fine-tuning.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why not keep every candidate tool call rather than filtering by loss reduction? What goes wrong if tau = 0?",
+    options: [
+      { text: "If tau = 0, every candidate is kept regardless of whether the tool result is relevant. Noisy or irrelevant tool calls still reduce loss slightly (or not at all) due to random variance. The model would be fine-tuned on a corpus full of spurious calls — learning to invoke tools even when unhelpful — leading to worse downstream task performance.", correct: true, explain: "The threshold tau serves as a quality gate. The paper shows that without filtering (or with too-low tau), the model overgenerates tool calls and performance degrades. The filter specifically targets the signal-to-noise ratio: a tool call with a result that helps predict the continuation has a large positive delta; a random or mismatched call has near-zero or negative delta." },
+      { text: "If tau = 0, the model could not be fine-tuned because the loss function becomes undefined when all candidates are kept.", correct: false, explain: "The fine-tuning objective is well-defined regardless of how many examples are kept. The problem with tau = 0 is quality, not mathematical validity: too many noisy examples dilute the training signal." },
+      { text: "If tau = 0, the model learns to call tools at every token position, causing computational overhead at inference time but not affecting accuracy.", correct: false, explain: "Calling tools at irrelevant positions does affect accuracy — a mismatched tool call injects wrong information into the context, actively misleading the model. This is worse than no tool call at all." },
+    ],
+  }}
+  revealExpr="\tau = 0 \Rightarrow \text{noisy calls kept} \Rightarrow \text{fine-tuning on spurious insertions}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why is loss reduction on the continuation a valid proxy for 'the tool call was useful'?",
+    options: [
+      { text: "If the tool result r contains information that genuinely helps predict what comes next in the sentence, conditioning on r lowers the cross-entropy on those continuation tokens. A lower L_plus means the model is less surprised by the text after the tool call — exactly what 'useful information' means in the probabilistic sense.", correct: true, explain: "This is the core elegance of Toolformer. Language modeling loss is a principled information-theoretic measure: if conditioning on the tool result reduces surprise about the continuation, the result carried signal. The training corpus is plain web text, so a tool call that reduces loss on a sentence like 'The revenue grew from 12M to 15M' when Calculator(12*1.25) returns 15 is genuinely capturing a causal dependency in the text." },
+      { text: "Loss reduction works as a proxy because all tools are guaranteed to return factually correct results, so a lower loss always means the tool returned the right answer.", correct: false, explain: "Tools can be noisy or incorrect (e.g., a search engine returning an outdated article). Loss reduction does not guarantee factual correctness — it measures statistical fit to the training corpus. A tool result that matches the wording of the training text reduces loss even if the underlying fact is wrong. This is a known limitation of the approach." },
+      { text: "Loss reduction is only a proxy for tool usefulness in the math and calendar tools; for search and translation, the authors use a separate human-labeled quality metric.", correct: false, explain: "The same loss-reduction criterion is applied uniformly to all five tools in the paper (Calculator, WikiSearch, MT, Q&A, Calendar). No tool-specific or human-labeled quality metric is used in the filtering stage." },
+    ],
+  }}
+  revealExpr="r \text{ informative} \Rightarrow p_\theta(x_{i+1:n} \mid [c \to r]) \uparrow \Rightarrow L_+ \downarrow"
+/>
+
+<SrsCard id="toolformer-filter" paper="toolformer" prompt="Write the Toolformer filtering criterion. What two loss values are compared, and what threshold must the difference exceed?" answer="The criterion is L_minus(x) - L_plus(x; c, r) >= tau. L_minus is the loss on the continuation without the tool call (conditioning only on the original prefix). L_plus is the loss on the continuation with the tool call and its result inserted at position i. If the loss reduction exceeds tau (set to 1.0 in the paper), the annotated example is kept for fine-tuning." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the Toolformer loss criterion, L_plus conditions on the tool result r. What does this mean computationally?", options: [
+    { text: "The tool call string [c -> r] is prepended into the context at position i, and the model's next-token probabilities for the continuation are recomputed with this augmented context. The continuation loss L_plus uses these updated probabilities.", correct: true, explain: "In a decoder-only transformer, the context window is everything to the left of the current token. Inserting [c -> r] at position i means all continuation tokens now attend to both the original prefix and the tool call/result. This is standard in-context conditioning — no model weights change during filtering; only the input sequence is modified." },
+    { text: "L_plus uses a separate model fine-tuned specifically to read tool outputs, while L_minus uses the original model.", correct: false, explain: "There is only one model. Both L_plus and L_minus are computed using the same frozen base model. The only difference is whether the tool call and result tokens are present in the context." },
+    { text: "L_plus re-runs the entire forward pass from scratch with the tool result appended at the end of the full sequence, not at position i.", correct: false, explain: "The tool call is inserted at position i — the location in the sentence where the information is needed, not at the end. Inserting it at the end would not affect the loss on the continuation tokens, which immediately follow position i." },
+  ]},
+  { prompt: "What is the role of the few-shot exemplars (5–10 per tool) used in Toolformer's data collection phase?", options: [
+    { text: "They are used only as prompts to the base model to generate candidate tool-call positions and arguments for a given sentence. They are not part of the fine-tuning data and are not used at inference time.", correct: true, explain: "The exemplars are used in a few-shot prompting step to steer the base model toward generating plausible API calls for each sentence. After this generation step, the filtering criterion (loss reduction) takes over entirely. The exemplars require minimal human effort — just a handful per tool — but they bootstrap the candidate generation process." },
+    { text: "They are used as the primary training data, augmented with automatically generated examples to reach a large enough dataset for fine-tuning.", correct: false, explain: "The exemplars are far too few (5–10) to serve as training data on their own. Their role is solely to prompt the model to generate a large number of candidate calls, which are then filtered. The actual fine-tuning corpus consists of the surviving filtered examples from the large unlabeled text collection." },
+    { text: "They are used to calibrate the threshold tau by measuring loss reduction on known-good tool calls.", correct: false, explain: "Tau is a fixed hyperparameter (1.0) not calibrated against the exemplars. The exemplars are purely for the few-shot prompting step to generate candidates, not for threshold selection." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of the Toolformer self-supervised training pipeline in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample position i and generate candidate tool call c with args using few-shot prompting",
+  "Execute tool c to obtain result r",
+  "Compute L_minus (continuation loss without call) and L_plus (continuation loss with [c→r])",
+  "Keep the insertion if L_minus - L_plus >= tau",
+  "Fine-tune the language model on the corpus of kept augmented examples",
+]} />
+
+Fill in the blank — the filtering condition that decides whether a tool call is retained:
+
+```text
+def keep_call(l_minus, l_plus, tau):
+    return _______
+```
+
+<FillBlank answer="l_minus - l_plus >= tau" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pseudo code pipeline, step 3 computes both L_minus and L_plus using the same base model weights. When are those weights updated?", options: [
+    { text: "The weights are updated only in step 5, during fine-tuning on the filtered augmented corpus. Steps 1–4 all use the frozen base model to generate and evaluate candidates.", correct: true, explain: "This is a crucial design choice: the filtering loop (steps 1–4) is a data curation pipeline, not a training loop. The base model is used read-only to both generate candidates and evaluate them. Only after the full corpus is constructed does fine-tuning begin. This means the filtering quality is bounded by the base model's ability to assess its own uncertainty — a powerful model will filter more accurately." },
+    { text: "The weights are updated after each accepted tool call in step 4, making the pipeline an online learning algorithm.", correct: false, explain: "Online updating would be unstable and would cause the filtering criterion to shift during data collection — earlier examples would be filtered by a weaker model than later ones, creating a biased corpus. Toolformer is an offline pipeline: collect all data first, then fine-tune once." },
+    { text: "The weights are updated in step 2 using the tool result as a supervision signal for a separate retrieval-augmented pretraining objective.", correct: false, explain: "No weight update happens in step 2. The tool execution is purely for obtaining the result r to insert into the context for evaluation. There is no retrieval-augmented pretraining loss in Toolformer." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the **Toolformer filtering step** in NumPy. Given arrays `l_minus` and `l_plus` of per-candidate continuation losses and a threshold `tau`, return a boolean mask of the candidates that should be kept for fine-tuning.
+
+<HintFade client:load
+  hints={[
+    "Compute the element-wise loss reduction: l_minus - l_plus. Each element is the perplexity reduction for one candidate tool call.",
+    "Compare the loss reduction array against the scalar threshold tau using a vectorized comparison operator. The result is a boolean array of the same shape.",
+    "Full solution: return (l_minus - l_plus) >= tau. That single line computes the mask for all candidates in one NumPy operation.",
+  ]}
+  solutionCode={`import numpy as np
+
+def toolformer_filter(l_minus: np.ndarray, l_plus: np.ndarray, tau: float) -> np.ndarray:
+    """
+    l_minus: 1-D array of continuation losses WITHOUT tool call, shape (n_candidates,)
+    l_plus:  1-D array of continuation losses WITH tool call and result, shape (n_candidates,)
+    tau:     scalar threshold; paper uses 1.0
+    Returns: boolean mask of shape (n_candidates,), True where the call is useful
+    """
+    return (l_minus - l_plus) >= tau`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def toolformer_filter(l_minus: np.ndarray, l_plus: np.ndarray, tau: float) -> np.ndarray:
+    """
+    l_minus: 1-D array of continuation losses WITHOUT tool call, shape (n_candidates,)
+    l_plus:  1-D array of continuation losses WITH tool call and result, shape (n_candidates,)
+    tau:     scalar threshold; paper uses 1.0
+    Returns: boolean mask of shape (n_candidates,), True where the call is useful
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity check
+l_minus = np.array([3.5, 2.0, 1.0, 4.2])
+l_plus  = np.array([1.0, 1.8, 0.9, 2.5])
+tau = 1.0
+mask = toolformer_filter(l_minus, l_plus, tau)
+if mask is not None:
+    print("mask:", mask)
+    print("kept indices:", np.where(mask)[0])
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def toolformer_filter(l_minus, l_plus, tau):
+    return (l_minus - l_plus) >= tau
+`}
+  testCode={`import numpy as np
+
+def toolformer_filter(l_minus, l_plus, tau):
+    return (l_minus - l_plus) >= tau
+
+# Test 1: output is a boolean array of correct shape
+l_minus = np.array([3.5, 2.0, 1.0, 4.2])
+l_plus  = np.array([1.0, 1.8, 0.9, 2.5])
+mask = toolformer_filter(l_minus, l_plus, tau=1.0)
+assert mask.shape == (4,), f"Expected shape (4,), got {mask.shape}"
+assert mask.dtype == bool or str(mask.dtype).startswith('bool'), f"Expected bool dtype, got {mask.dtype}"
+
+# Test 2: correct candidates are selected (reductions: 2.5, 0.2, 0.1, 1.7)
+expected = np.array([True, False, False, True])
+assert np.array_equal(mask, expected), f"Expected {expected}, got {mask}"
+
+# Test 3: all True when loss reduction exceeds tau everywhere
+l_minus_all = np.array([5.0, 5.0, 5.0])
+l_plus_all  = np.array([1.0, 1.0, 1.0])
+mask_all = toolformer_filter(l_minus_all, l_plus_all, tau=1.0)
+assert mask_all.all(), f"All should be True, got {mask_all}"
+
+# Test 4: all False when no reduction exceeds tau
+l_minus_none = np.array([1.5, 1.5, 1.5])
+l_plus_none  = np.array([1.4, 1.6, 1.5])
+mask_none = toolformer_filter(l_minus_none, l_plus_none, tau=1.0)
+assert not mask_none.any(), f"All should be False, got {mask_none}"
+
+# Test 5: boundary — exactly tau is kept (>=)
+l_minus_boundary = np.array([2.0])
+l_plus_boundary  = np.array([1.0])
+mask_boundary = toolformer_filter(l_minus_boundary, l_plus_boundary, tau=1.0)
+assert mask_boundary[0] == True, "Exactly tau should be kept (>= not >)"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "The filter returns (l_minus - l_plus) >= tau. What does it mean when this value is negative for a candidate?", options: [
+    { text: "L_plus > L_minus: the tool call actually increased the continuation loss. The tool result made the continuation harder to predict, not easier — this is a harmful insertion that Toolformer correctly discards.", correct: true, explain: "A negative loss reduction means the tool output confused the model more than it helped. This happens when the tool returns irrelevant or misleading information (e.g., a translation API called for a factual question). Discarding these is correct — inserting them into training data would teach the model to call tools when it shouldn't." },
+    { text: "L_plus > L_minus means the tool call was computationally expensive and the filter discards it for efficiency reasons.", correct: false, explain: "Computational cost is not part of the Toolformer filtering criterion. The filter is purely based on the statistical utility of the tool result for predicting the continuation, regardless of API latency or cost." },
+    { text: "A negative value means the tool call was called at the wrong position in the sentence but would have been useful at a different position.", correct: false, explain: "Position-independence is not modeled in this criterion. A negative loss reduction simply means this specific (position, call, result) triple is not useful for predicting the continuation. The position and call are regenerated independently for each candidate." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2302.04761.pdf" title="Toolformer: Language Models Can Teach Themselves to Use Tools (Schick et al. 2023)" />
+
+Suggested reading order: §2 (Method — the self-supervised data generation and filtering pipeline) → §3 (Experiments — benchmark results across all five tools and comparison to GPT-3) → §5 (Discussion — limitations of the loss-reduction heuristic and failure modes).
+
+</StageSection>
