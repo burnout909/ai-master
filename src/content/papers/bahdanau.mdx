@@ -1,0 +1,270 @@
+---
+slug: bahdanau
+title: "Neural Machine Translation by Jointly Learning to Align and Translate"
+authors: "Bahdanau, Cho, Bengio"
+year: 2014
+era: foundations
+arxivId: "1409.0473"
+estimatedMinutes: 50
+prerequisites: []
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { MCQuiz } from "../../components/stages/MCQuiz.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { AlignmentGrid } from "../../components/widgets/AlignmentGrid.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+import { MathReact } from "../../components/math/MathReact.tsx";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before attention, seq2seq models compressed an entire source sentence into a single fixed-size vector **C** — the encoder's final hidden state. The decoder then generated every target token from that one vector alone. For short sentences this works. For long ones, the model must stuff "The European Parliament has rejected the proposal to postpone the amendment to the Tobacco Products Directive" into a 256-dimensional vector. Early words get crushed out by later ones. Translation quality collapses.
+
+**Bahdanau's fix:** instead of a static C, give the decoder a *dynamic* context vector <Math expr="c_i" /> at each output step *i*. The decoder computes a soft alignment weight <Math expr="\alpha_{ij}" /> over every encoder hidden state <Math expr="h_j" />, then takes a weighted sum. The decoder "peeks" at the full source sequence each step, focusing on the parts most relevant to the current output word.
+
+<PredictThenReveal client:load predictPrompt="Before the widget: when translating 'Je suis étudiant' → 'I am a student', which source word should the decoder attend to most when producing 'student'? Type your guess.">
+  **'étudiant'** — the direct semantic match. Soft alignment lets the decoder assign near-1 weight to 'étudiant' and near-0 to everything else when generating 'student'. This is the core insight: attention is a learned, differentiable lookup over the source sequence.
+</PredictThenReveal>
+
+Now play with the widget. Change the target step (decoder position). Toggle Monotonic mode. Drag the Sharpness slider to the extremes.
+
+<AlignmentGrid client:load />
+
+<PredictThenReveal client:load predictPrompt="When you set Sharpness very low (near 0.5), the attention weights become flat. What does that mean for the context vector c_i, and why is it bad for translation?">
+  **Flat weights make c_i an unweighted average of all encoder states.** Every source word contributes equally regardless of relevance — the context loses all alignment information. The decoder can't distinguish which source word to focus on, so it tends to produce generic, blurry translations. High sharpness forces the attention to concentrate on one or a few source tokens, creating a crisp "soft pointer" into the source sequence.
+</PredictThenReveal>
+
+<SrsCard id="bahdanau-bottleneck" paper="bahdanau" prompt="What is the fixed-vector bottleneck in vanilla seq2seq, and how does Bahdanau attention solve it?" answer="Vanilla seq2seq encodes the entire source sentence into one fixed-size vector C (the final encoder hidden state). Long sentences lose early-word information. Bahdanau attention replaces C with a dynamic context vector c_i = Σ_j α_{ij} h_j computed at each decoder step, letting the decoder attend to any part of the source sequence." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does vanilla seq2seq struggle with long sentences?", options: [
+    { text: "A fixed-size encoder vector must compress the entire source — early tokens get lost", correct: true, explain: "The encoder final state is a bottleneck: capacity is fixed regardless of sentence length, so long-distance information is overwritten." },
+    { text: "The decoder RNN has vanishing gradients", correct: false, explain: "Vanishing gradients are a separate problem; the bottleneck is the fixed-capacity encoding, not gradient flow." },
+    { text: "Softmax over a large vocabulary is too slow", correct: false, explain: "Vocabulary softmax cost exists but is unrelated to the fixed-vector bottleneck." },
+  ]},
+  { prompt: "In Bahdanau attention, the context vector c_i is:", options: [
+    { text: "A weighted sum of all encoder hidden states, weights computed per decoder step", correct: true, explain: "c_i = Σ_j α_{ij} h_j where α_{ij} depends on both the current decoder state s_{i-1} and each encoder state h_j." },
+    { text: "The encoder's final hidden state, unchanged from vanilla seq2seq", correct: false, explain: "That is exactly what Bahdanau replaces — c_i is now dynamic, not static." },
+    { text: "A learned embedding for the current target token", correct: false, explain: "The target embedding is the decoder input; c_i is the encoder-side context injected into the decoder." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The encoder is a **bidirectional RNN**. For source token j, forward and backward hidden states are concatenated:
+
+<Math display expr="h_j = \left[\overrightarrow{h}_j\,;\,\overleftarrow{h}_j\right]" />
+
+At decoder step i, an **alignment score** measures how well source position j matches the current decoder state <Math expr="s_{i-1}" />:
+
+<Math display expr="e_{ij} = v_a^\top \tanh\!\left(W_a\,s_{i-1} + U_a\,h_j\right)" />
+
+This is the **additive (Bahdanau) score function** — a small one-hidden-layer MLP with learned weight matrices <Math expr="W_a, U_a" /> and vector <Math expr="v_a" />.
+
+Softmax over all source positions gives a **probability distribution**:
+
+<Math display expr="\alpha_{ij} = \frac{\exp(e_{ij})}{\sum_{k=1}^{T_x} \exp(e_{ik})}" />
+
+The **context vector** is the resulting convex combination:
+
+<Math display expr="c_i = \sum_{j=1}^{T_x} \alpha_{ij}\, h_j" />
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why use additive scoring e = vᵀ tanh(W·s + U·h) rather than the simpler dot product s·h?",
+    options: [
+      { text: "Additive scoring uses separate projection matrices W_a and U_a, allowing s and h to have different dimensions", correct: true, explain: "The decoder state s and encoder state h may have different sizes. Separate linear projections map both to a common space before combining. Dot product requires identical dimensions and no projection." },
+      { text: "Dot product would always produce negative scores, making softmax ill-defined", correct: false, explain: "Dot products can be positive or negative; softmax handles both fine. The real issue is dimensional incompatibility." },
+      { text: "The tanh prevents gradient vanishing through the alignment network", correct: false, explain: "Tanh does saturate at extremes; the choice is about dimensional flexibility, not gradient flow through v_a." },
+    ],
+  }}
+  revealExpr="e_{ij} = v_a^\top \tanh(W_a s_{i-1} + U_a h_j)"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why apply softmax along the source-position axis j (not across decoder steps i)?",
+    options: [
+      { text: "Softmax over j produces α_{ij} summing to 1, making c_i a convex combination of encoder states", correct: true, explain: "Σ_j α_{ij} = 1 means c_i is a properly normalised weighted average — interpretable as a soft pointer into the source. Softmax over i would produce a distribution over decoder steps, which has no useful meaning here." },
+      { text: "Softmax over i would be numerically unstable", correct: false, explain: "Numerical stability is the same either way; the reason is semantic — we want a distribution over source positions, not decoder steps." },
+      { text: "Softmax over j ensures the attention weights are monotonically increasing", correct: false, explain: "Softmax produces no monotonicity guarantee; weights can peak anywhere. Monotonicity is a separate model variant (hard attention)." },
+    ],
+  }}
+  revealExpr="\sum_{j=1}^{T_x} \alpha_{ij} = 1,\quad c_i = \sum_j \alpha_{ij} h_j \text{ is a convex combination}"
+/>
+
+<SrsCard id="bahdanau-additive-score" paper="bahdanau" prompt="Write the Bahdanau additive attention score e_{ij} and state why it needs separate projection matrices." answer="e_{ij} = v_a^⊤ tanh(W_a s_{i-1} + U_a h_j). Separate W_a and U_a project the decoder state s and encoder state h into a common dimension d_a, allowing s and h to have different sizes. A plain dot product requires identical dimensions." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the role of the bidirectional encoder in Bahdanau's model?", options: [
+    { text: "Each h_j captures both left and right context around source token j", correct: true, explain: "Concatenating forward and backward RNN states means h_j encodes what precedes and follows token j — richer representations than a one-directional pass." },
+    { text: "It doubles the vocabulary size to handle both source and target", correct: false, explain: "Bidirectionality is about temporal context in the encoder, not vocabulary." },
+    { text: "It allows the model to attend to future target tokens", correct: false, explain: "The bidirectional encoder reads the source; future target tokens are unknown during decoding." },
+  ]},
+  { prompt: "After computing α_{ij} via softmax, the context vector c_i equals:", options: [
+    { text: "Σ_j α_{ij} h_j — a weighted average of encoder hidden states", correct: true, explain: "This is the defining equation of Bahdanau attention. α provides the weights; h_j provides the values." },
+    { text: "The encoder hidden state h_j with the highest α_{ij}", correct: false, explain: "That would be hard attention (arg-max selection). Soft attention takes the full weighted average." },
+    { text: "The decoder hidden state s_{i-1} projected by W_a", correct: false, explain: "W_a s_{i-1} is part of the score computation, not the context vector." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the six steps of one Bahdanau attention pass in the correct order:
+
+<LineReorder client:load lines={[
+  "Run forward RNN over source tokens → hidden states h→_1 … h→_Tx",
+  "Run backward RNN over source tokens → hidden states h←_1 … h←_Tx",
+  "Concatenate h→_j and h←_j to form h_j for each source position j",
+  "For each decoder step i: compute scores e_{ij} = v_a^T tanh(W_a s_{i-1} + U_a h_j)",
+  "Normalise scores: α_{ij} = softmax(e_{ij}) over j",
+  "Compute context c_i = Σ_j α_{ij} h_j, then update decoder state s_i",
+]} />
+
+Fill the blank in this pseudo code:
+
+```text
+def bahdanau_context(s_prev, H, W_a, U_a, v_a):
+    # s_prev: (d_s,)  H: (T, d_h)  W_a: (d_a, d_s)  U_a: (d_a, d_h)  v_a: (d_a,)
+    scores = v_a @ np.tanh(W_a @ s_prev + (U_a @ H.T).T)  # (T,)
+    alpha = _______          # ← fill: normalise scores to a distribution
+    c = alpha @ H            # (d_h,)
+    return c, alpha
+```
+
+<FillBlank answer="softmax(scores)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why must the bidirectional encoder finish processing the entire source before decoding starts?", options: [
+    { text: "The backward RNN must read from the end; all h_j are needed before any α can be computed", correct: true, explain: "The backward pass reads source tokens right-to-left, so it only produces h←_1 after seeing the whole sentence. All h_j must be ready before scoring any decoder step." },
+    { text: "The decoder needs to know the source length to allocate memory", correct: false, explain: "Memory allocation is an engineering concern, not the algorithmic reason. The causal issue is the backward RNN." },
+    { text: "Softmax requires all scores simultaneously, forcing a full pass first", correct: false, explain: "Softmax does require all j scores at once per decoder step, but the deeper reason is the backward encoder pass." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the Bahdanau additive attention score and softmax weighting in NumPy. Given decoder state `s_prev`, encoder states `H`, and projection matrices `W_a`, `U_a`, `v_a`, return the attention weights `alpha` (shape `(T_enc,)`) and context vector `c` (shape `(d_h,)`).
+
+<HintFade client:load
+  hints={[
+    "Compute scores e_j = v_a · tanh(W_a @ s_prev + U_a @ h_j) for every j. You can vectorise by projecting all H at once: (U_a @ H.T).T gives shape (T, d_a).",
+    "Add W_a @ s_prev (shape d_a) to each row of the H projection, then apply np.tanh element-wise. Finally dot with v_a to get a (T,) vector of scores.",
+    "For numerically stable softmax: subtract np.max(scores) before np.exp, then divide by the sum. Context is alpha @ H.",
+  ]}
+  solutionCode={`import numpy as np
+
+def softmax(x):
+    x = x - np.max(x)
+    e = np.exp(x)
+    return e / e.sum()
+
+def bahdanau_attention(s_prev, H, W_a, U_a, v_a):
+    # s_prev: (d_s,)  H: (T, d_h)
+    proj_s = W_a @ s_prev          # (d_a,)
+    proj_H = (U_a @ H.T).T         # (T, d_a)
+    scores = np.tanh(proj_H + proj_s) @ v_a   # (T,)
+    alpha = softmax(scores)        # (T,)
+    c = alpha @ H                  # (d_h,)
+    return alpha, c`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def softmax(x):
+    # TODO: stable softmax
+    pass
+
+def bahdanau_attention(s_prev, H, W_a, U_a, v_a):
+    # TODO: implement additive attention
+    # 1. project s_prev with W_a -> (d_a,)
+    # 2. project all H rows with U_a -> (T, d_a)
+    # 3. add, tanh, dot v_a -> scores (T,)
+    # 4. softmax -> alpha (T,)
+    # 5. context = alpha @ H  -> (d_h,)
+    pass
+
+# Quick sanity check
+np.random.seed(42)
+T, d_s, d_h, d_a = 6, 8, 8, 4
+s = np.random.randn(d_s)
+H = np.random.randn(T, d_h)
+W_a = np.random.randn(d_a, d_s)
+U_a = np.random.randn(d_a, d_h)
+v_a = np.random.randn(d_a)
+result = bahdanau_attention(s, H, W_a, U_a, v_a)
+if result is not None:
+    alpha, c = result
+    print("alpha shape:", alpha.shape, "  sum:", alpha.sum().round(6))
+    print("context shape:", c.shape)
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+def softmax(x):
+    x = x - np.max(x)
+    e = np.exp(x)
+    return e / e.sum()
+def bahdanau_attention(s_prev, H, W_a, U_a, v_a):
+    proj_s = W_a @ s_prev
+    proj_H = (U_a @ H.T).T
+    scores = np.tanh(proj_H + proj_s) @ v_a
+    alpha = softmax(scores)
+    c = alpha @ H
+    return alpha, c
+`}
+  testCode={`import numpy as np
+np.random.seed(7)
+T, d_s, d_h, d_a = 5, 6, 6, 4
+s = np.random.randn(d_s)
+H = np.random.randn(T, d_h)
+W_a = np.random.randn(d_a, d_s)
+U_a = np.random.randn(d_a, d_h)
+v_a = np.random.randn(d_a)
+alpha, c = bahdanau_attention(s, H, W_a, U_a, v_a)
+
+# weights sum to 1
+assert np.allclose(alpha.sum(), 1.0, atol=1e-6), f"alpha must sum to 1, got {alpha.sum()}"
+# correct shape
+assert alpha.shape == (T,), f"alpha shape should be ({T},), got {alpha.shape}"
+assert c.shape == (d_h,), f"c shape should be ({d_h},), got {c.shape}"
+# weights are non-negative (softmax output)
+assert (alpha >= 0).all(), "all attention weights must be >= 0"
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why subtract np.max(scores) before np.exp in the softmax implementation?", options: [
+    { text: "To prevent np.exp overflow on large positive scores without changing the output", correct: true, explain: "exp(x - max) shifts all values to (-∞, 0], so exp produces values in (0, 1]. The ratios are identical to unshifted softmax by algebra, but float overflow is avoided." },
+    { text: "To center the distribution around zero for better gradient flow", correct: false, explain: "The shift is purely for numerical stability, not a gradient consideration — the mathematical output is identical either way." },
+    { text: "To make all scores negative so softmax outputs probabilities", correct: false, explain: "Softmax outputs probabilities regardless of sign of inputs. The subtraction is about overflow prevention." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/1409.0473.pdf" title="Bahdanau Attention" />
+
+Suggested reading order: §3 (Learning to Align and Translate — the full model description) → §A.1.2 (score function formula and motivation) → §4.2 (quantitative results and alignment visualisations).
+
+</StageSection>
