@@ -1,0 +1,276 @@
+---
+slug: gqa
+title: "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints"
+authors: "Ainslie et al."
+year: 2023
+era: efficiency
+arxivId: "2305.13245"
+estimatedMinutes: 35
+prerequisites: ["transformer"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { KVGroups } from "../../components/widgets/KVGroups.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+During autoregressive decoding, the transformer generates one token at a time. Each new token must attend to every prior token, which requires storing the key (K) and value (V) projections for all past positions. This KV-cache grows with sequence length, number of layers, and — crucially — the number of attention heads. In standard Multi-Head Attention (MHA) with h heads, you store h separate (K, V) pairs per token per layer, each of dimension d_head. For a 65B-parameter model serving a 4096-token context, this can reach several gigabytes — more than the weights themselves at fp16.
+
+Multi-Query Attention (MQA) proposed by Shazeer (2019) solves this by making all h query heads share a single (K, V) pair. The KV-cache shrinks by a factor of h, yielding dramatic speedups. The catch: training MQA from scratch sometimes degrades quality, and you cannot easily convert an existing MHA checkpoint without retraining from scratch.
+
+**Grouped-Query Attention (GQA)** splits the difference. Instead of 1 or h KV heads, it uses g groups (1 ≤ g ≤ h), each group sharing one (K, V) pair among h/g query heads. When g = h you recover MHA; when g = 1 you recover MQA. The key insight: you can initialize a GQA model by **mean-pooling** the pretrained MHA K and V projection matrices within each group — giving a warm start that requires only ~5% of the original pretraining tokens to recover most of the original quality.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if a model has h=16 query heads and you reduce KV groups from g=16 to g=4, by what factor does the KV-cache shrink, and what happens to the query projections?">
+  The KV-cache shrinks by a factor of h/g = 16/4 = 4. The query projections are completely unchanged — all 16 Q heads remain. Only the K and V heads are reduced from 16 independent copies to 4 shared copies. This is why GQA preserves most of MHA's expressiveness: queries still attend with full diversity, they just share keys and values within their group.
+</PredictThenReveal>
+
+**Interact with the widget:** slide the KV groups slider from h (MHA) down to 1 (MQA) and watch the cache shrink. The current-g column shows you exactly how much memory a given g choice uses versus the two extremes.
+
+<KVGroups client:load />
+
+<PredictThenReveal client:load predictPrompt="After exploring the widget: with h=16 and g=4, the GQA cache is 1/4 of MHA. What would happen to decoding throughput if the KV-cache is the memory-bandwidth bottleneck, and why does g=4 often outperform g=1 in practice?">
+  When KV-cache bandwidth is the bottleneck, reducing the cache size by 4x means 4x less data to read per decode step — approaching a 4x throughput improvement. GQA (g=4) often beats MQA (g=1) in practice because g=1 forces all heads to share identical keys/values, losing the ability to attend to different aspects of the context simultaneously. GQA at g=4 retains multiple independent context summaries per layer while still achieving most of MQA's memory savings. Llama 2 70B and Mistral 7B both use g=8 for this reason.
+</PredictThenReveal>
+
+<SrsCard id="gqa-tradeoff" paper="gqa" prompt="What does GQA's parameter g control, and what are the two extreme cases?" answer="g is the number of KV groups. When g=h you get standard MHA (h separate KV pairs, full quality, large cache). When g=1 you get MQA (1 shared KV pair, smallest cache, potential quality drop). Any g in between is GQA, trading cache size for quality smoothly." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "During autoregressive decoding, why does the KV-cache dominate memory rather than model weights?", options: [
+    { text: "Model weights are fixed and loaded once; the KV-cache grows with every generated token (O(seq_len × n_layers × h × d_head) per batch item), and at long contexts it can exceed the weight size.", correct: true, explain: "Weights are static — a 7B model in fp16 is ~14 GB, constant throughout inference. But the KV-cache scales with batch size, sequence length, layers, and heads. At seq_len=4096 with a 32-layer 16-head model, the cache adds hundreds of MB per batch item, eventually dominating memory bandwidth during decoding." },
+    { text: "Model weights are evicted to CPU RAM after the prefill phase to save GPU memory, so only the KV-cache remains on the GPU.", correct: false, explain: "Weights are not evicted during inference — they must stay on the GPU for every decode step since every token passes through the full network. The KV-cache growth is simply a separate, additive cost that accumulates token by token." },
+    { text: "GQA replaces the weight matrices with the KV-cache, so the same memory holds both.", correct: false, explain: "GQA does not merge weights and cache. It reduces the number of K and V heads, making both the weight matrices and the runtime KV-cache smaller — but they remain separate structures." },
+  ]},
+  { prompt: "How does GQA's mean-pool initialization avoid training from scratch?", options: [
+    { text: "The pretrained MHA K and V projection matrices are grouped, and each group's matrices are averaged together to form one GQA K/V head. This gives sensible starting weights so only a short fine-tune (~5% of pretraining tokens) is needed.", correct: true, explain: "Mean-pooling averages the weight tensors of the h/g heads assigned to each group. The resulting GQA weights capture the average behaviour of the original heads, which is a much better initialisation than random. The paper shows this recovers nearly full MHA quality after ~5% of original pretraining compute." },
+    { text: "Mean-pooling initialises the query weights by averaging adjacent query heads, which is what makes fine-tuning fast.", correct: false, explain: "Query projections are not changed at all in GQA — only K and V projections are pooled. All h query heads are kept exactly as they were in the MHA checkpoint." },
+    { text: "Mean-pooling replaces K and V projections with their layer-wise mean across all layers, creating a single shared KV head for the whole model.", correct: false, explain: "Pooling is done within each layer, not across layers. Each layer gets its own g GQA K/V heads formed by mean-pooling the h MHA heads within that layer. Sharing across layers would destroy the depth of the representation." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The KV-cache size for a single sequence scales as:
+
+<Math display expr="\text{KV-cache bytes} = g \times d_\text{head} \times 2 \times L \times T \times b_e" />
+
+where g is the number of KV groups, d_head is the head dimension, the factor 2 accounts for both K and V, L is the number of layers, T is the current sequence length, and b_e is bytes per element (2 for fp16). The reduction ratio from MHA to GQA is simply h/g: replacing h independent KV heads with g shared ones cuts the cache by that factor.
+
+For GQA attention itself, each query head q_i in group k attends using the single shared key and value for that group:
+
+<Math display expr="\text{Attn}(Q_i, K_k, V_k) = \text{softmax}\!\left(\frac{Q_i K_k^\top}{\sqrt{d_\text{head}}}\right) V_k, \quad k = \left\lfloor \frac{i \cdot g}{h} \right\rfloor" />
+
+The mean-pool initialization for a group containing head indices S_k is:
+
+<Math display expr="\hat{W}^K_k = \frac{1}{|S_k|} \sum_{j \in S_k} W^K_j, \quad \hat{W}^V_k = \frac{1}{|S_k|} \sum_{j \in S_k} W^V_j" />
+
+<DerivationStep client:load
+  question={{
+    prompt: "What does g=h reduce to in the GQA cache formula, and what does g=1 reduce to?",
+    options: [
+      { text: "g=h gives the full MHA cache (h × d_head × 2 × L × T × b_e); g=1 gives the MQA cache (1 × d_head × 2 × L × T × b_e), which is h times smaller.", correct: true, explain: "Substituting g=h recovers every MHA head having its own K,V — the standard case. Substituting g=1 gives a single shared KV pair for all heads — exactly MQA. The reduction ratio h/g smoothly interpolates: g=h means ratio 1 (no saving); g=1 means ratio h (maximum saving)." },
+      { text: "g=h gives MQA (1 KV pair) and g=1 gives MHA (h KV pairs) — the slider direction is inverted.", correct: false, explain: "The direction is not inverted. g is the number of KV groups. More groups (g=h) means each head has its own group — that is MHA. Fewer groups (g=1) means all heads share one group — that is MQA." },
+      { text: "g=h and g=1 both give the same cache size because g is cancelled out by d_head in the formula.", correct: false, explain: "d_head is fixed by the architecture and does not depend on g. The formula scales linearly with g, so g=h is h times larger than g=1." },
+    ],
+  }}
+  revealExpr="g{=}h \Rightarrow \text{MHA},\quad g{=}1 \Rightarrow \text{MQA},\quad \text{ratio} = h/g"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does mean-pooling pretrained MHA heads give a better GQA initialization than random weights?",
+    options: [
+      { text: "Averaging the K and V projections within a group produces weights that approximate the average behaviour of the original heads. Since the pretrained heads already encode useful structure, their mean is a sensible starting point, requiring only fine-tuning to specialize rather than learning from scratch.", correct: true, explain: "Random initialization discards all the pretrained structure — the model would need to re-learn representations from scratch. Mean-pooling preserves the overall direction of each head group's projections. The paper shows this initialization recovers nearly full perplexity with just ~5% of pretraining tokens, versus far more if initialized randomly." },
+      { text: "Mean-pooling is mathematically equivalent to the original MHA for linear functions, so the GQA model computes identical outputs before fine-tuning.", correct: false, explain: "Mean-pooled GQA is not mathematically equivalent to MHA. The pooled K/V weights produce different attention patterns than the individual original heads. The claim is that the mean is a good warm start, not that outputs are identical." },
+      { text: "Mean-pooling ensures the GQA weight norms match those of MHA, which stabilises the learning-rate schedule during fine-tuning.", correct: false, explain: "While norms may remain similar, that is not the primary reason. The key benefit is that the weights already encode the semantic content learned during pretraining, reducing the distance to the target GQA solution." },
+    ],
+  }}
+  revealExpr="\hat{W}^K_k = \frac{1}{|S_k|}\sum_{j \in S_k} W^K_j \;\Rightarrow\; \text{warm start, not random}"
+/>
+
+<SrsCard id="gqa-cache-formula" paper="gqa" prompt="Write the formula for total KV-cache bytes in GQA and identify what each symbol means." answer="bytes = g * d_head * 2 * L * T * b_e. g=KV groups, d_head=head dimension, 2=K and V, L=layers, T=sequence length (tokens generated so far), b_e=bytes per element (2 for fp16). MHA uses g=h; MQA uses g=1." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the GQA attention formula, which projections are shared within a group and which are not?", options: [
+    { text: "K and V projections are shared — all query heads in group k attend using the same K_k and V_k. The Q projection is not shared — each of the h query heads has its own W_Q.", correct: true, explain: "This is the defining property of GQA. Sharing K and V reduces the cache footprint (K and V activations per token) without changing the number of Q heads. The full diversity of query projections is preserved, allowing different heads to attend with different query representations even though they look up the same key/value pool." },
+    { text: "Q projections are shared within each group, while K and V remain independent per head.", correct: false, explain: "Sharing Q would reduce the number of distinct attention patterns, hurting quality. GQA shares K and V (which determine the cache size) and keeps all Q heads independent." },
+    { text: "All three projections (Q, K, V) are shared within each group, making GQA a form of grouped convolution.", correct: false, explain: "Only K and V are shared. Sharing Q as well would give a completely different mechanism. GQA's novelty is specifically the asymmetric sharing: independent Q but shared KV." },
+  ]},
+  { prompt: "If a model has h=32 query heads, g=8 KV groups, and the total MHA KV-cache at some sequence length is 2 GB, what is the GQA KV-cache?", options: [
+    { text: "2 GB × (g/h) = 2 GB × (8/32) = 0.5 GB. The reduction ratio is h/g = 4.", correct: true, explain: "The cache scales linearly with the number of KV heads. Going from 32 independent KV heads to 8 shared groups reduces the cache by 32/8 = 4×. 2 GB / 4 = 0.5 GB." },
+    { text: "2 GB × (h/g) = 8 GB — the cache grows because each group now covers more heads.", correct: false, explain: "The cache depends on the number of distinct KV pairs stored, which is g, not on how many query heads share each KV pair. Reducing from h=32 to g=8 cuts the stored KV count by 4." },
+    { text: "0.25 GB — the reduction is h/(2g) = 2 because K and V are stored separately.", correct: false, explain: "K and V are both included in the factor of 2 in the formula (g × d_head × 2 × ...). The reduction ratio is still h/g = 4, so the correct answer is 0.5 GB." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the four steps of converting a pretrained MHA checkpoint to GQA in the correct order:
+
+<LineReorder client:load lines={[
+  "Partition the h query heads into g equal groups of size h/g each",
+  "For each group, mean-pool the K and V projection matrices: W_K_group = mean(W_K[heads_in_group], axis=0)",
+  "Keep all h Q projection matrices unchanged",
+  "Fine-tune the GQA model for ~5% of original pretraining tokens to recover quality",
+]} />
+
+Fill in the blank — the mean-pool step for K projections inside the group loop:
+
+```text
+def mha_to_gqa(W_K, h, g):
+    # W_K: shape (h, d_model, d_head)
+    group_size = h // g
+    W_K_gqa = []
+    for k in range(g):
+        heads = W_K[k * group_size : (k + 1) * group_size]
+        W_K_gqa.append(_________)
+    return stack(W_K_gqa)  # shape (g, d_model, d_head)
+```
+
+<FillBlank answer="mean(heads, axis=0)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why is fine-tuning needed after mean-pool initialization, given that the weights are already pretrained?", options: [
+    { text: "Mean-pooling introduces a mismatch: the Q heads were trained to work with h distinct KV projections, but now each group of h/g Q heads shares one KV projection. A short fine-tune lets the Q heads adapt to the reduced KV diversity.", correct: true, explain: "The pretrained Q projections implicitly 'expect' the specific K,V matrices they were trained alongside. After pooling, the K,V matrices are averaged versions, and h/g different Q heads now share each one. Fine-tuning re-aligns the Q heads to the new shared K/V basis, recovering the lost specialization with minimal compute." },
+    { text: "Fine-tuning is needed to update the positional embeddings, which are not compatible with grouped attention patterns.", correct: false, explain: "Positional embeddings are not changed by GQA — they apply to token positions in the sequence, not to attention heads. The fine-tuning targets the attention projections specifically." },
+    { text: "Mean-pooling always produces NaN weights when head dimensions do not align perfectly, so fine-tuning corrects the numerical errors.", correct: false, explain: "Mean-pooling is a simple average — it produces valid weights as long as the head tensors have the same shape. NaN would only occur if the inputs were NaN, which they should not be after normal pretraining." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the group-mean-pooling of K (or V) projection weights in NumPy. Given `W_K` of shape `(h, d_model, d_head)` and the target number of groups `g`, return `W_K_gqa` of shape `(g, d_model, d_head)` where each group is the mean of its `h // g` consecutive heads.
+
+<HintFade client:load
+  hints={[
+    "Reshape W_K from (h, d_model, d_head) to (g, h//g, d_model, d_head) so that each group is a slice along axis 0. Then average over axis 1 (the heads-within-group axis).",
+    "Use np.reshape(W_K, (g, h // g, d_model, d_head)) then .mean(axis=1). Check that h % g == 0 before reshaping.",
+    "Full solution: assert h % g == 0; return W_K.reshape(g, h // g, d_model, d_head).mean(axis=1). The output shape is (g, d_model, d_head).",
+  ]}
+  solutionCode={`import numpy as np
+
+def pool_kv_heads(W_K, g):
+    """
+    W_K: (h, d_model, d_head)  pretrained MHA K-projection weights
+    g:   int                    target number of GQA KV groups
+    returns: (g, d_model, d_head)
+    """
+    h, d_model, d_head = W_K.shape
+    assert h % g == 0, f"h={h} must be divisible by g={g}"
+    group_size = h // g
+    return W_K.reshape(g, group_size, d_model, d_head).mean(axis=1)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def pool_kv_heads(W_K, g):
+    """
+    W_K: (h, d_model, d_head)  pretrained MHA K-projection weights
+    g:   int                    target number of GQA KV groups
+    returns: (g, d_model, d_head)
+    """
+    # TODO: implement group mean-pooling
+    pass
+
+# Quick sanity check
+np.random.seed(0)
+h, d_model, d_head = 8, 512, 64
+W_K = np.random.randn(h, d_model, d_head)
+g = 4
+
+result = pool_kv_heads(W_K, g)
+if result is not None:
+    print("Output shape:", result.shape)  # should be (4, 512, 64)
+    print("Expected:    ", (g, d_model, d_head))
+else:
+    print("Not yet implemented — return W_K_gqa of shape (g, d_model, d_head)")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def pool_kv_heads(W_K, g):
+    h, d_model, d_head = W_K.shape
+    assert h % g == 0, f"h={h} must be divisible by g={g}"
+    group_size = h // g
+    return W_K.reshape(g, group_size, d_model, d_head).mean(axis=1)
+`}
+  testCode={`import numpy as np
+
+def pool_kv_heads(W_K, g):
+    h, d_model, d_head = W_K.shape
+    assert h % g == 0, f"h={h} must be divisible by g={g}"
+    group_size = h // g
+    return W_K.reshape(g, group_size, d_model, d_head).mean(axis=1)
+
+np.random.seed(42)
+
+# Test 1: output shape is (g, d_model, d_head)
+h, d_model, d_head = 8, 512, 64
+g = 4
+W_K = np.random.randn(h, d_model, d_head)
+out = pool_kv_heads(W_K, g)
+assert out.shape == (g, d_model, d_head), f"Expected shape ({g}, {d_model}, {d_head}), got {out.shape}"
+
+# Test 2: each group is the exact mean of its h//g heads
+group_size = h // g
+for k in range(g):
+    expected = W_K[k * group_size : (k + 1) * group_size].mean(axis=0)
+    assert np.allclose(out[k], expected, atol=1e-6), f"Group {k}: mean mismatch. Max diff: {np.abs(out[k] - expected).max()}"
+
+# Test 3: g=h returns W_K unchanged (each group is a single head)
+out_mha = pool_kv_heads(W_K, h)
+assert out_mha.shape == (h, d_model, d_head)
+assert np.allclose(out_mha, W_K, atol=1e-6), "g=h should return original heads unchanged"
+
+# Test 4: g=1 returns global mean across all heads
+out_mqa = pool_kv_heads(W_K, 1)
+assert out_mqa.shape == (1, d_model, d_head)
+assert np.allclose(out_mqa[0], W_K.mean(axis=0), atol=1e-6), "g=1 should be global mean of all heads"
+
+# Test 5: h % g != 0 raises AssertionError
+try:
+    pool_kv_heads(np.zeros((7, 64, 64)), 4)
+    assert False, "Should have raised AssertionError"
+except AssertionError:
+    pass
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the pool_kv_heads implementation, why is a reshape to (g, group_size, d_model, d_head) followed by mean(axis=1) correct for group mean-pooling?", options: [
+    { text: "The reshape groups the h heads into g consecutive blocks of group_size heads each along axis 0 and 1. Taking the mean over axis 1 (the within-group axis) then collapses each block to its mean, giving the (g, d_model, d_head) output.", correct: true, explain: "np.reshape preserves the data order (C-order by default), so the first group_size rows of the original (h, ...) array become the first group after reshaping to (g, group_size, ...). Averaging over axis=1 then reduces each group of group_size matrices to a single matrix — exactly the mean-pool operation GQA needs." },
+    { text: "mean(axis=1) averages over the d_model dimension, so each output head has lower-dimensional projections.", correct: false, explain: "After reshaping to (g, group_size, d_model, d_head), axis 1 has size group_size — it is the within-group heads axis, not the d_model axis. d_model is axis 2 after the reshape." },
+    { text: "The reshape is only valid when group_size equals d_head, otherwise numpy reorders the elements incorrectly.", correct: false, explain: "Numpy reshape requires that the total number of elements is preserved (h * d_model * d_head == g * group_size * d_model * d_head, which holds since h = g * group_size). It does not require group_size == d_head." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2305.13245.pdf" title="GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints (Ainslie et al. 2023)" />
+
+Suggested reading order: §2.2 (Grouped-Query Attention — the definition of g groups, the mean-pool initialization procedure, and how it generalizes MHA and MQA) → §3 (Experiments — model sizes, datasets, and baseline comparisons) → §3.2 (Speed — memory bandwidth analysis and wall-clock decoding throughput results).
+
+</StageSection>
