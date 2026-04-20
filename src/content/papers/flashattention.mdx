@@ -1,0 +1,295 @@
+---
+slug: flashattention
+title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+authors: "Dao, Fu, Ermon, Rudra, Ré"
+year: 2022
+era: efficiency
+arxivId: "2205.14135"
+estimatedMinutes: 50
+prerequisites: ["transformer"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { FlashMemory } from "../../components/widgets/FlashMemory.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Standard attention is quadratic in sequence length — both in compute and in memory. But the memory bottleneck is subtler than it first appears. A modern GPU has two kinds of storage: High Bandwidth Memory (HBM), which on an A100 holds ~40 GB but has relatively high latency; and on-chip SRAM (shared memory), which is extremely fast but totals only ~20 MB spread across all streaming multiprocessors. When naive attention computes the N×N score matrix S = QK^T, it writes all N² values to HBM so that softmax can read them back. For N=8192 and 32-bit floats, that is 256 MB written and then re-read — a round trip to slow memory, repeated every layer.
+
+FlashAttention (Dao et al., 2022) reframes the problem as an **IO-aware** algorithm. Instead of asking "what is the minimal flop count?" it asks "how do we minimise HBM reads and writes?" The answer is tiling: divide Q, K, and V into blocks small enough to fit in SRAM simultaneously. Within each tile, compute partial scores, maintain running statistics (max `m` and normalizer `l`) to fuse the numerically-stable online softmax, and accumulate the output O — all without touching HBM. The full N×N score matrix is never materialised. The result is mathematically exact (no approximation), 2–4× faster wall-clock, and uses O(N) instead of O(N²) HBM memory.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if the N×N score matrix never touches HBM, what is the dominant HBM cost for FlashAttention, and how does it scale with N?">
+  Without materialising S, the only values written to HBM are Q, K, V (each N×d) and the final output O (N×d). That is 4Nd elements — linear in N. The naive approach writes N² elements just for the score matrix. For N=8192 and d=64, the naive HBM cost is ~67M elements vs. flash's ~2M — a 32× reduction in this component alone.
+</PredictThenReveal>
+
+**Interact with the widget:** choose different sequence lengths N and tile sizes B. Observe how the savings ratio grows quadratically as N increases. Also watch the SRAM-per-tile value — once it exceeds 192 KB the widget warns you that the tile is too large for one A100 SM's shared memory and the kernel cannot run.
+
+<FlashMemory client:load />
+
+<PredictThenReveal client:load predictPrompt="After exploring the widget: at N=8192 with tile B=64 the savings ratio is large, and SRAM per tile is well under 192 KB. What happens if you increase B to 256 at N=8192, and why does that matter for kernel design?">
+  At B=256 the SRAM per tile grows to 3 × 256 × 64 × 4 bytes = 196 KB, which exceeds the 192 KB limit and triggers the warning. A real CUDA kernel at this tile size would overflow shared memory, causing a runtime error or silent register spilling. Kernel writers therefore choose B to stay just under the SRAM budget — a hardware-aware parameter that directly constrains the algorithm.
+</PredictThenReveal>
+
+<SrsCard id="flashattention-io" paper="flashattention" prompt="Why does naive attention write O(N²) elements to HBM, and what does FlashAttention write instead?" answer="Naive attention materialises the full N×N score matrix in HBM so that softmax can read it back — O(N²) elements. FlashAttention tiles the computation so intermediate scores stay in on-chip SRAM, and only the final O (size N×d) is written to HBM — O(Nd) elements, linear in N." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the key hardware constraint that motivates FlashAttention's tiling approach?", options: [
+    { text: "On-chip SRAM is fast but small (~20 MB total on A100), while HBM is large but slow. Tiling keeps intermediates in SRAM to avoid expensive HBM round-trips.", correct: true, explain: "SRAM access is orders-of-magnitude faster than HBM. By fitting Q, K, V tiles into SRAM simultaneously, FlashAttention eliminates the write-then-read of the N×N score matrix in HBM, which is the dominant bottleneck for large N." },
+    { text: "GPU arithmetic units are too slow for exact softmax, so FlashAttention uses approximations that fit in registers.", correct: false, explain: "FlashAttention produces an exact result — no approximation. The bottleneck it fixes is memory bandwidth (HBM I/O), not arithmetic throughput. Modern GPUs are usually compute-bound only for very small matrices; for large-N attention the bottleneck is memory." },
+    { text: "The N×N score matrix overflows float32 dynamic range, so FlashAttention uses bfloat16 tiles to keep values small enough.", correct: false, explain: "The numerical issue FlashAttention addresses is softmax instability (handled by subtracting the running max), not float32 overflow. The tile size is chosen for SRAM capacity, not dtype range." },
+  ]},
+  { prompt: "FlashAttention is described as 'IO-aware'. What does IO-awareness mean in this context?", options: [
+    { text: "The algorithm is designed to minimise the number of reads and writes between HBM (slow, large) and SRAM (fast, small), rather than minimising raw FLOP count.", correct: true, explain: "Traditional algorithm analysis counts FLOPs. IO-awareness instead counts memory traffic. For attention at realistic N, the roofline model shows the kernel is memory-bandwidth-bound, so reducing HBM I/O yields larger speedups than reducing FLOPs." },
+    { text: "IO-awareness means FlashAttention uses asynchronous disk I/O to stream model weights from NVMe during inference.", correct: false, explain: "IO here refers to on-device memory hierarchy (HBM vs. SRAM), not disk or network I/O. FlashAttention is a GPU kernel optimisation, not a disk-streaming strategy." },
+    { text: "FlashAttention monitors network I/O during distributed training to decide when to synchronise gradient updates across nodes.", correct: false, explain: "FlashAttention is a single-GPU kernel optimisation focused on the memory hierarchy within one device. It has no distributed training component." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+Standard attention computes:
+
+<Math display expr="S = \frac{QK^\top}{\sqrt{d}}, \quad P = \text{softmax}(S), \quad O = PV" />
+
+For a row of S with values s_1, ..., s_N, the numerically stable softmax subtracts the row maximum m = max(s_i) before exponentiation: P_i = exp(s_i - m) / sum_j exp(s_j - m). Naive attention must read the entire row to find m, then read it again to compute the exponentials — two HBM passes over N² elements.
+
+**Online softmax** fuses these two passes into one by maintaining running statistics. Given a new block of scores S_block, update the running max m and normalizer l:
+
+<Math display expr="m_\text{new} = \max(m,\; \max_j S_{\text{block},j})" />
+<Math display expr="l_\text{new} = e^{m - m_\text{new}} \, l \;\;+\;\; \sum_j e^{S_{\text{block},j} - m_\text{new}}" />
+<Math display expr="O_\text{new} = \frac{l \cdot e^{m - m_\text{new}}}{l_\text{new}} \, O \;\;+\;\; \frac{1}{l_\text{new}} \sum_j e^{S_{\text{block},j} - m_\text{new}} V_{\text{block},j}" />
+
+The factor e^(m - m_new) rescales the old statistics whenever the running max is updated by a new block. After processing all blocks, O holds the exact same result as the two-pass softmax.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does online softmax subtract the running max m_new from the exponent rather than computing exp(S_block) directly?",
+    options: [
+      { text: "Subtracting the maximum before exp prevents overflow: the largest exponent becomes exp(0) = 1, and all others are smaller. Without this, large logits cause exp to return inf, making the normalizer meaningless.", correct: true, explain: "float32 overflows at exp(x) ≈ x > 88. Subtracting the row max makes the largest value exp(0) = 1 and all others strictly less than 1. This is the standard numerical stability trick for softmax, and online softmax extends it across tiles by tracking the running max." },
+      { text: "Subtracting m_new reduces the number of floating-point multiplications needed, making the kernel faster by approximately 2×.", correct: false, explain: "The subtraction adds operations rather than removing them. Its purpose is numerical stability (preventing overflow), not arithmetic reduction." },
+      { text: "The running max m_new is used to index into a lookup table of precomputed exponentials, which is why it must be subtracted first.", correct: false, explain: "FlashAttention computes exponentials directly — there is no lookup table. The subtraction is purely for numerical stability." },
+    ],
+  }}
+  revealExpr="\text{Stability: } \exp(s_i - m) \in (0, 1] \text{ when } m = \max_i s_i, \text{ avoiding float overflow}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "What is the HBM memory saving from never materialising S? (N=sequence length, d=head dimension)",
+    options: [
+      { text: "Naive writes O(N²) elements (the full score matrix); FlashAttention writes O(Nd) elements (Q, K, V, O only). Saving = N² / (4Nd) = N / (4d), which grows linearly with N.", correct: true, explain: "For N=8192, d=64: naive HBM write = 8192² = 67M elements; flash HBM write ≈ 4 × 8192 × 64 = 2M elements. The ratio is ~32×. As N doubles the saving doubles — this is the fundamental scaling advantage." },
+      { text: "Saving is constant O(1) because tiling only shifts work between HBM and SRAM, keeping total memory usage the same.", correct: false, explain: "While total memory across HBM + SRAM is similar, the critical metric is HBM traffic. FlashAttention eliminates the O(N²) score matrix from HBM entirely, reducing HBM reads/writes from O(N²) to O(Nd)." },
+      { text: "Saving is O(log N) because each tile reduces N by half recursively, similar to a merge sort.", correct: false, explain: "FlashAttention does not use recursive halving. It processes tiles linearly — each of the N/B query-blocks iterates over all N/B key/value blocks. The saving is linear in N, not logarithmic." },
+    ],
+  }}
+  revealExpr="\text{Naive: } O(N^2) \text{ HBM writes} \;\;\to\;\; \text{Flash: } O(Nd) \;\;\Rightarrow\;\; \text{saving} \propto \frac{N}{d}"
+/>
+
+<SrsCard id="flashattention-online-softmax" paper="flashattention" prompt="What two running statistics does online softmax maintain per row, and what do they represent?" answer="m = running maximum of seen scores (used to prevent exp overflow); l = running normalizer = sum of exp(s_j - m) for all seen j. After processing all tiles these yield the exact softmax denominator, so the output O is identical to naive two-pass attention." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the online softmax update, what role does the factor e^(m - m_new) play?", options: [
+    { text: "It rescales the previously accumulated O and l to account for the fact that the running max increased — old contributions were computed relative to m and must be re-expressed relative to the new, larger m_new.", correct: true, explain: "When m_new > m, the old normalizer l and output O were computed as if m were the true max. Multiplying by exp(m - m_new) < 1 converts them to the new reference frame. This is the key algebraic trick that lets each tile update be exact without storing all previous scores." },
+    { text: "It acts as a learning-rate decay, reducing the influence of earlier blocks so that later blocks dominate the final output.", correct: false, explain: "Online softmax is a deterministic algorithm with an exact result — there is no learning rate. The factor exp(m - m_new) is a mathematical correction, not a weighting heuristic." },
+    { text: "It normalises the tile scores to unit variance before the exponential, similar to layer normalisation.", correct: false, explain: "This is not normalisation to unit variance. Subtracting the running max shifts the scores so the maximum is 0, preventing overflow. It does not divide by variance." },
+  ]},
+  { prompt: "FlashAttention recomputes tile scores during the backward pass rather than storing them. Why?", options: [
+    { text: "Recomputing the N×N score matrix in the backward pass from the stored Q, K, V tiles costs extra FLOPs but avoids storing O(N²) activations in HBM — a worthwhile trade since memory is the bottleneck.", correct: true, explain: "Standard backprop through attention must store the softmax matrix P for the gradient computation, requiring O(N²) memory. FlashAttention instead stores only O, l, m (O(Nd) total) and recomputes the needed tiles on the fly. Extra compute is cheap compared to the HBM savings for large N." },
+    { text: "Recomputation is needed because FlashAttention uses approximate softmax; exact gradients require rerunning the forward pass with higher precision.", correct: false, explain: "FlashAttention's softmax is exact, not approximate. Recomputation is a deliberate memory-vs-compute tradeoff, not a correction for approximation error." },
+    { text: "Storing the N×N matrix would exceed GPU VRAM, causing an out-of-memory error on all modern hardware.", correct: false, explain: "It can fit for small N, and for large N the issue is bandwidth cost, not absolute capacity per se. The key insight is that even when it fits, reading/writing O(N²) to HBM is the performance bottleneck." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of the FlashAttention forward pass in the correct order:
+
+<LineReorder client:load lines={[
+  "Outer loop: for each Q-block q_i (rows i*B to (i+1)*B of Q)",
+  "Inner loop: for each K/V-block (k_j, v_j) — compute tile scores S_ij = q_i * k_j^T / sqrt(d) in SRAM",
+  "Update running max and normalizer: m_new = max(m, rowmax(S_ij)); l_new = rescale(l, m, m_new) + rowsum(exp(S_ij - m_new))",
+  "Update output accumulator: O_new = rescale(O, m, m_new) + exp(S_ij - m_new) * v_j / l_new",
+  "After all K/V blocks, write final O-block to HBM",
+]} />
+
+Fill in the blank — the online softmax running-max update used inside the inner loop:
+
+```text
+def flash_inner(m, l, O, S_block, V_block):
+    m_new = _______
+    scale = exp(m - m_new)
+    l_new = scale * l + rowsum(exp(S_block - m_new))
+    O_new = scale * O + matmul(exp(S_block - m_new), V_block) / l_new
+    return m_new, l_new, O_new
+```
+
+<FillBlank answer="max(m, rowmax(S_block))" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the FlashAttention tiling loop, which values stay in SRAM throughout the inner loop, and which are read from / written to HBM only once?", options: [
+    { text: "SRAM holds the current Q-block, one K/V-block at a time, and the running statistics (m, l, O). HBM is read once per block for K and V, and written once at the end for each O-block.", correct: true, explain: "The outer loop loads a Q-block into SRAM and keeps it there for all inner iterations. Each inner iteration loads one K-block and one V-block, computes the tile, updates (m, l, O) in registers, and discards the K/V tile. The score matrix S_ij never touches HBM. The final O-block is written back once per outer iteration." },
+    { text: "SRAM holds the entire Q matrix; K and V are streamed tile-by-tile. The score matrix S is stored in SRAM and then compressed to HBM at the end.", correct: false, explain: "Only one Q-block fits in SRAM at a time — the entire Q matrix is too large. Crucially, the score matrix S is never written to HBM at all; it is computed and discarded tile by tile in SRAM." },
+    { text: "All of Q, K, V and the full N×N score matrix are loaded into SRAM at once; only the output O is returned to HBM.", correct: false, explain: "SRAM capacity is only ~20 MB total. For N=1024 and d=64, Q alone is 256 KB — far too large for all of Q, K, V, and S to fit simultaneously. The entire point of tiling is to process only small blocks at a time." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the online softmax accumulation step in NumPy. Given the current running state (m, l, O) and a new block of raw (unscaled) attention scores `S_block` (shape B_q x B_k) and `V_block` (shape B_k x d), compute and return the updated (m_new, l_new, O_new).
+
+<HintFade client:load
+  hints={[
+    "Start with the running max update: m_new = np.maximum(m, S_block.max(axis=-1, keepdims=True)). This is element-wise max between the old running max and the max of the new block's columns.",
+    "The rescaling factor for old statistics is scale = np.exp(m - m_new). Use it to rescale l: l_new = scale * l + np.exp(S_block - m_new).sum(axis=-1, keepdims=True). For O, apply the same rescale before adding the new block's contribution.",
+    "Full update: P_block = np.exp(S_block - m_new); l_new = scale * l + P_block.sum(-1, keepdims=True); O_new = (scale * l * O + P_block @ V_block) / l_new. Return (m_new, l_new, O_new).",
+  ]}
+  solutionCode={`import numpy as np
+
+def online_softmax_update(m, l, O, S_block, V_block):
+    """
+    m:       (B_q, 1)  running row-max
+    l:       (B_q, 1)  running normalizer
+    O:       (B_q, d)  running output accumulator
+    S_block: (B_q, B_k) raw scores for this tile
+    V_block: (B_k, d)  value tile
+    returns: (m_new, l_new, O_new)
+    """
+    m_new = np.maximum(m, S_block.max(axis=-1, keepdims=True))
+    scale = np.exp(m - m_new)                         # rescale old stats
+    P_block = np.exp(S_block - m_new)                 # numerically stable
+    l_new = scale * l + P_block.sum(axis=-1, keepdims=True)
+    O_new = (scale * l * O + P_block @ V_block) / l_new
+    return m_new, l_new, O_new`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def online_softmax_update(m, l, O, S_block, V_block):
+    """
+    m:       (B_q, 1)  running row-max
+    l:       (B_q, 1)  running normalizer
+    O:       (B_q, d)  running output accumulator
+    S_block: (B_q, B_k) raw scores for this tile
+    V_block: (B_k, d)  value tile
+    returns: (m_new, l_new, O_new)
+    """
+    # TODO: implement online softmax update
+    pass
+
+# Quick sanity check
+np.random.seed(0)
+B_q, B_k, d = 4, 8, 16
+m = np.full((B_q, 1), -np.inf)
+l = np.zeros((B_q, 1))
+O = np.zeros((B_q, d))
+S_block = np.random.randn(B_q, B_k)
+V_block = np.random.randn(B_k, d)
+
+result = online_softmax_update(m, l, O, S_block, V_block)
+if result is not None:
+    m_new, l_new, O_new = result
+    print("m_new shape:", m_new.shape)
+    print("l_new shape:", l_new.shape)
+    print("O_new shape:", O_new.shape)
+    print("l_new (should be row sums of exp):", l_new.flatten()[:4])
+else:
+    print("Not yet implemented — return (m_new, l_new, O_new)")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def online_softmax_update(m, l, O, S_block, V_block):
+    m_new = np.maximum(m, S_block.max(axis=-1, keepdims=True))
+    scale = np.exp(m - m_new)
+    P_block = np.exp(S_block - m_new)
+    l_new = scale * l + P_block.sum(axis=-1, keepdims=True)
+    O_new = (scale * l * O + P_block @ V_block) / l_new
+    return m_new, l_new, O_new
+`}
+  testCode={`import numpy as np
+
+def online_softmax_update(m, l, O, S_block, V_block):
+    m_new = np.maximum(m, S_block.max(axis=-1, keepdims=True))
+    scale = np.exp(m - m_new)
+    P_block = np.exp(S_block - m_new)
+    l_new = scale * l + P_block.sum(axis=-1, keepdims=True)
+    O_new = (scale * l * O + P_block @ V_block) / l_new
+    return m_new, l_new, O_new
+
+np.random.seed(42)
+B_q, B_k, d = 4, 8, 16
+
+# Test 1: single-block result matches naive softmax * V
+S = np.random.randn(B_q, B_k)
+V = np.random.randn(B_k, d)
+m_init = np.full((B_q, 1), -np.inf)
+l_init = np.zeros((B_q, 1))
+O_init = np.zeros((B_q, d))
+_, _, O_flash = online_softmax_update(m_init, l_init, O_init, S, V)
+# naive
+P_naive = np.exp(S - S.max(axis=-1, keepdims=True))
+P_naive /= P_naive.sum(axis=-1, keepdims=True)
+O_naive = P_naive @ V
+assert np.allclose(O_flash, O_naive, atol=1e-6), f"Single block mismatch. Max diff: {np.abs(O_flash - O_naive).max()}"
+
+# Test 2: two-block result matches naive softmax over concatenated scores
+S1 = np.random.randn(B_q, B_k)
+S2 = np.random.randn(B_q, B_k)
+V1 = np.random.randn(B_k, d)
+V2 = np.random.randn(B_k, d)
+m0 = np.full((B_q, 1), -np.inf)
+l0 = np.zeros((B_q, 1))
+O0 = np.zeros((B_q, d))
+m1, l1, O1 = online_softmax_update(m0, l0, O0, S1, V1)
+_, _, O2 = online_softmax_update(m1, l1, O1, S2, V2)
+S_cat = np.concatenate([S1, S2], axis=-1)
+V_cat = np.concatenate([V1, V2], axis=0)
+P_naive2 = np.exp(S_cat - S_cat.max(axis=-1, keepdims=True))
+P_naive2 /= P_naive2.sum(axis=-1, keepdims=True)
+O_naive2 = P_naive2 @ V_cat
+assert np.allclose(O2, O_naive2, atol=1e-6), f"Two-block mismatch. Max diff: {np.abs(O2 - O_naive2).max()}"
+
+# Test 3: output shape is (B_q, d)
+assert O2.shape == (B_q, d), f"Expected shape ({B_q}, {d}), got {O2.shape}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does the online_softmax_update function initialise m to -inf and l to 0 before the first block?", options: [
+    { text: "m=-inf ensures that the first block's max always wins (max(-inf, any_value) = any_value), and l=0 means no prior normalizer exists yet — both are the correct identity elements for an empty running state.", correct: true, explain: "The recurrence requires neutral initial values. -inf is the identity for max (any real number is larger), and 0 is the identity for the sum (adding 0 contributes nothing). After the first block update, m becomes the first block's row-max and l becomes the sum of its exponentials — exactly the correct values." },
+    { text: "m=-inf prevents the GPU from allocating HBM for the score matrix, because negative infinity signals the kernel to skip HBM writes.", correct: false, explain: "m=-inf is a mathematical initialisation value, not a hardware signal. It has no effect on HBM allocation — that is determined by the kernel's memory layout, not the value of a running statistic." },
+    { text: "l=0 initialises the learning rate for the softmax temperature, scaling all logits to zero before training begins.", correct: false, explain: "l is the normalizer (partition function) for the softmax, not a learning rate. It accumulates the sum of exponentials across blocks. Initialising to 0 means no prior contribution, which is correct for an empty state." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2205.14135.pdf" title="FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness (Dao et al. 2022)" />
+
+Suggested reading order: §1 (Introduction — the IO bottleneck and motivation for tiling) → §3.1 (IO Complexity — formal proof that FlashAttention reduces HBM reads/writes from O(Nd + N²) to O(N²d/M) where M is SRAM size) → §3.2 (FlashAttention Algorithm — the full tiled forward and backward pass pseudocode).
+
+</StageSection>
