@@ -3,9 +3,9 @@ import { PAPERS_META } from "./papers-meta";
 import { ERAS } from "../lib/eras";
 
 describe("papers-meta", () => {
-  it("has fourteen implemented papers in MVP", () => {
+  it("has fifteen implemented papers in MVP", () => {
     const impl = PAPERS_META.filter((p) => p.status === "implemented").map((p) => p.slug);
-    expect(impl.sort()).toEqual(["adam", "alexnet", "bahdanau", "batchnorm", "bert", "ddpm", "dropout", "gan", "gpt2", "gpt3", "react", "resnet", "seq2seq", "transformer"]);
+    expect(impl.sort()).toEqual(["adam", "alexnet", "bahdanau", "batchnorm", "bert", "ddpm", "dropout", "gan", "gpt2", "gpt3", "react", "resnet", "seq2seq", "transformer", "vit"]);
   });
 
   it("every era has at least one paper", () => {

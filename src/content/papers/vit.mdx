@@ -1,0 +1,244 @@
+---
+slug: vit
+title: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
+authors: "Dosovitskiy et al."
+year: 2020
+era: transformer
+arxivId: "2010.11929"
+estimatedMinutes: 45
+prerequisites: ["transformer"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { PatchGrid } from "../../components/widgets/PatchGrid.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+Before ViT, every competitive image model used **convolutional neural networks**. CNNs encode two strong inductive biases: *locality* (each filter sees only a small neighborhood) and *translation equivariance* (sliding a filter across the image). These biases are powerful — they let a ResNet generalize well even on modest datasets. But they also cap what the architecture can learn: a convolution can never directly relate a pixel in the top-left corner to one in the bottom-right.
+
+ViT asks: what if we stripped away all CNN bias and applied a plain Transformer? The trick is treating the image as a **sequence of patches**. A 224×224 RGB image is cut into 196 non-overlapping 16×16 patches. Each patch is flattened to a 768-dimensional vector and linearly projected — exactly analogous to a word embedding. A learnable CLS token is prepended, learned position embeddings are added, and the resulting 197-token sequence is fed into a standard Transformer encoder. The CLS output is used for classification.
+
+**Interact with the widget:** set Image size to 16 and Patch size to 4. Read off the number of tokens. Then switch Patch size to 8 — tokens drop by 4x. Observe how patch dim scales with patch area times channels.
+
+<PatchGrid client:load />
+
+<PredictThenReveal client:load predictPrompt="ViT trained on ImageNet alone underperforms a ResNet of similar size. Trained on JFT-300M it matches or beats ResNets. Why does data scale compensate for missing CNN inductive bias?">
+  CNN locality and translation equivariance are implicit priors that help generalization when data is scarce. With millions of images, these priors become unnecessary — a Transformer has enough examples to learn the spatial structure of images from scratch. Large-scale pretraining lets ViT discover patch relationships that CNNs hard-code, and even go beyond them (e.g., attending across the entire image from layer 1).
+</PredictThenReveal>
+
+<SrsCard id="vit-patch-sequence" paper="vit" prompt="How does ViT convert a 224x224 RGB image into a sequence for the Transformer? How many tokens result when the patch size is 16?" answer="The image is divided into (224/16)^2 = 196 non-overlapping 16x16 patches. Each patch is flattened to a 16*16*3 = 768-dim vector and linearly projected. A CLS token is prepended, giving 197 tokens total." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "What is the purpose of the CLS token prepended to the patch sequence in ViT?", options: [
+    { text: "It aggregates global image information via attention; its final hidden state is used as the image representation for classification", correct: true, explain: "The CLS token has no patch content of its own. Through self-attention it gathers information from all 196 patch tokens, and its output embedding is passed to the classification head — exactly as in BERT for sentence classification." },
+    { text: "It marks the start of the sequence so the model knows token positions begin at 1, not 0", correct: false, explain: "Position information comes from the learned position embeddings added to all tokens. The CLS token's role is representational (aggregate global context), not positional bookkeeping." },
+    { text: "It is the patch token with the highest activation and is selected dynamically per image", correct: false, explain: "CLS is a fixed learnable embedding prepended to every sequence. It is not selected from existing patches — it is an extra token with its own learnable initial embedding." },
+  ]},
+  { prompt: "Why does ViT need substantially more training data than a CNN of comparable capacity to reach the same accuracy?", options: [
+    { text: "CNNs encode locality and translation equivariance as inductive biases; ViT must learn these spatial priors purely from data, requiring more examples", correct: true, explain: "ResNets build in the assumption that nearby pixels are more related and that features repeat spatially. ViT makes no such assumptions, so it needs a much larger dataset to learn equivalent spatial regularities from scratch." },
+    { text: "ViT uses a larger embedding dimension than ResNets, so it overfits more easily and needs more data to regularize", correct: false, explain: "Capacity mismatch is not the primary explanation. Even ViT variants matched in parameter count to ResNets still need more data. The key difference is the absence of architectural inductive bias." },
+    { text: "ViT's attention is quadratic in sequence length, so it trains slower and needs more epochs — which is equivalent to needing more data", correct: false, explain: "Training speed affects compute budget, not the fundamental data requirement. The data requirement gap stems from the absence of spatial inductive bias, not from attention's computational complexity." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The two key quantities in ViT are the **sequence length** N and the **token dimension** D:
+
+<Math display expr="N = \frac{H \cdot W}{P^2} \qquad D = P^2 \cdot C" />
+
+where H and W are image height and width, P is the patch size, and C is the number of channels. For the standard ViT-B/16 on 224x224 RGB images: N = 196, D = 768.
+
+The linear patch embedding projects each flattened patch into D dimensions:
+
+<Math display expr="\mathbf{z}_i = \mathbf{x}_i \mathbf{W}_{\text{embed}} + \mathbf{b}_{\text{embed}}, \quad \mathbf{x}_i \in \mathbb{R}^{P^2 C},\; \mathbf{W}_{\text{embed}} \in \mathbb{R}^{P^2 C \times D}" />
+
+Self-attention then operates over the N+1 tokens (including CLS), with complexity:
+
+<Math display expr="\mathcal{O}(N^2 \cdot D)" />
+
+This is manageable at N=196 but grows rapidly with smaller patch sizes (e.g., P=8 gives N=784, roughly 16x more attention operations than P=16).
+
+<DerivationStep client:load
+  question={{
+    prompt: "For a 224x224 RGB image with patch size P=16 and C=3 channels, compute N (sequence length) and D (token dimension).",
+    options: [
+      { text: "N = (224*224)/(16*16) = 196 tokens; D = 16*16*3 = 768 dimensions", correct: true, explain: "N = H*W/P^2 = 50176/256 = 196. D = P^2*C = 256*3 = 768. These are the canonical ViT-B/16 numbers cited throughout the paper." },
+      { text: "N = 224 tokens (one per row); D = 16*3 = 48 dimensions", correct: false, explain: "ViT patches are 2D squares, not rows. Each patch covers P x P pixels, so N = (H/P)*(W/P) = 14*14 = 196, not 224. D includes the full patch area: P*P*C." },
+      { text: "N = 197 (including CLS); D = 224*3 = 672 dimensions", correct: false, explain: "N=196 before adding CLS; D depends on patch dimensions, not image width. D = P^2*C = 768. The CLS token uses the same D but is counted separately." },
+    ],
+  }}
+  revealExpr="N = \frac{224^2}{16^2} = 196, \quad D = 16^2 \times 3 = 768"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does ViT need more data than a ResNet to generalize, from a Bayesian perspective?",
+    options: [
+      { text: "ResNet's locality and translation equivariance act as a strong implicit prior; ViT has a flat prior over all spatial functions and needs data to sharpen it", correct: true, explain: "In Bayesian terms, CNN inductive biases correspond to a tight prior that concentrates probability on smooth, locally-structured functions. ViT's attention has a much broader prior — it can attend anywhere — so the posterior requires more data to concentrate on image-like functions." },
+      { text: "ViT has more parameters, so its VC dimension is higher and requires more data to avoid overfitting", correct: false, explain: "Comparable ViT and ResNet architectures have similar parameter counts. The data gap persists even when controlling for capacity, indicating the issue is prior bias, not raw parameter count." },
+      { text: "ViT uses softmax attention which is numerically unstable with small datasets, leading to gradient explosion", correct: false, explain: "Attention stability is an implementation concern handled by scaling (dividing by sqrt(d_k)) and normalization. The data requirement gap is architectural, not numerical." },
+    ],
+  }}
+  revealExpr="\text{ResNet: tight spatial prior} \Rightarrow \text{less data needed} \quad \text{ViT: flat prior} \Rightarrow \text{more data needed}"
+/>
+
+<SrsCard id="vit-complexity" paper="vit" prompt="What is the attention complexity of ViT in terms of sequence length N and token dimension D? How does halving the patch size P affect this complexity?" answer="Attention complexity is O(N^2 * D). Halving P quadruples N (since N = H*W/P^2), so attention cost increases by 16x. This is why ViT is usually run with P=16 or P=32 rather than P=8." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "ViT-L/16 uses patch size 16. If you switched to ViT-L/8 (same image size 224x224), how does the sequence length change?", options: [
+    { text: "N quadruples from 196 to 784, because N = H*W/P^2 and halving P multiplies N by 4", correct: true, explain: "N = (224/8)^2 = 28^2 = 784. The attention matrix grows from 196^2 to 784^2, a 16x increase in compute. This makes ViT/8 much more expensive per image." },
+    { text: "N doubles from 196 to 392, because halving patch size doubles the number of patches along each edge", correct: false, explain: "Halving P doubles patches along each edge (14 -> 28), but N = 14^2 = 196 vs 28^2 = 784 — a 4x increase, not 2x. The quadratic relationship matters." },
+    { text: "N stays the same because ViT pads the sequence to a fixed length", correct: false, explain: "ViT does not pad to a fixed sequence length. N is determined by the image size and patch size: N = (H/P)*(W/P). Smaller patches produce more tokens." },
+  ]},
+  { prompt: "In the patch embedding equation z_i = x_i * W_embed, what is the shape of W_embed for ViT-B/16?", options: [
+    { text: "W_embed has shape (768, 768) — square because D = P^2*C = 768", correct: false, explain: "The input x_i has dimension P^2*C = 768, and the output z_i has dimension D = 768. So W_embed is (768, 768) only because D = P^2*C coincidentally. The general shape is (P^2*C, D)." },
+    { text: "W_embed has shape (P^2*C, D) = (768, 768) for ViT-B/16; in general the input dim P^2*C need not equal D", correct: true, explain: "The general projection is from flattened patch dimension P^2*C to the model dimension D. For ViT-B/16 these happen to be equal (both 768), but ViT-S/16 uses D=384 with the same P^2*C=768, giving a (768, 384) matrix." },
+    { text: "W_embed has shape (N, D) = (196, 768) — one row per patch position", correct: false, explain: "W_embed projects one patch's pixels to D dimensions; it does not depend on N. The position embeddings (a separate (N+1, D) matrix) handle positional information, not the patch projection." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of ViT's forward pass in the correct order:
+
+<LineReorder client:load lines={[
+  "Reshape image into N = (H*W)/P^2 non-overlapping patches of shape (P, P, C)",
+  "Flatten each patch to a vector of dimension P^2*C and linearly project to D",
+  "Prepend a learnable CLS token to create a sequence of length N+1",
+  "Add learned position embeddings to each of the N+1 token vectors",
+  "Feed the sequence through L Transformer encoder layers; use CLS output for classification",
+]} />
+
+Fill the blank in the patch embedding pseudocode. `patch_embed` has shape `(N, P*P*C)` and `W_embed` maps from `P*P*C` to `D`:
+
+```text
+def embed_patches(patch_embed, W_embed, b_embed):
+    # patch_embed: (N, P*P*C)
+    # returns: (N, D)
+    return ______
+```
+
+<FillBlank answer="patch_embed @ W_embed + b_embed" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the ViT forward pass, why are position embeddings added after the linear patch projection rather than before?", options: [
+    { text: "The linear projection maps patches into the model's D-dimensional space; position embeddings live in the same D-dimensional space, so addition only makes sense after projection", correct: true, explain: "Position embeddings are learned vectors of dimension D. The raw flattened patches have dimension P^2*C which may differ from D. After projection both the patch embedding and position embedding are in R^D, so they can be summed element-wise." },
+    { text: "Adding position information before projection would destroy the patch's spatial content", correct: false, explain: "Mathematically you could add a position signal before or after projection (it would just be folded into the weight matrix). The practical reason is that position embeddings share the D-dimensional space with the projected tokens." },
+    { text: "Position embeddings are added after projection to save computation — avoiding a second matrix multiply", correct: false, explain: "Addition is O(N*D) regardless of when it occurs. The correct reason is that position embeddings are defined in the D-dimensional token space, not the raw pixel space." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement `patchify` in NumPy: given an image of shape `(H, W, C)` and patch size `P`, return a matrix of shape `(N, P*P*C)` where each row is a flattened patch. Patches are extracted in raster order (left-to-right, top-to-bottom).
+
+<HintFade client:load
+  hints={[
+    "N = (H//P) * (W//P). Reshape the image to expose the patch grid, then flatten each patch. Think about reshaping to (H//P, P, W//P, P, C) first.",
+    "After reshaping to (H//P, P, W//P, P, C), transpose the axes so patch-row and patch-col come first: (H//P, W//P, P, P, C). Then reshape to (N, P*P*C).",
+    "Full solution: img.reshape(H//P, P, W//P, P, C).transpose(0,2,1,3,4).reshape(-1, P*P*C)",
+  ]}
+  solutionCode={`import numpy as np
+
+def patchify(img, P):
+    H, W, C = img.shape
+    return img.reshape(H//P, P, W//P, P, C).transpose(0,2,1,3,4).reshape(-1, P*P*C)`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def patchify(img, P):
+    # img: (H, W, C) numpy array
+    # P: patch size (assume H and W are divisible by P)
+    # returns: (N, P*P*C) where N = (H//P)*(W//P)
+    H, W, C = img.shape
+    # TODO: reshape img into patches
+    pass
+
+# Quick sanity check
+img = np.zeros((8, 8, 3))
+patches = patchify(img, 4)
+print("shape:", patches.shape)   # expect (4, 48)
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def patchify(img, P):
+    H, W, C = img.shape
+    return img.reshape(H//P, P, W//P, P, C).transpose(0,2,1,3,4).reshape(-1, P*P*C)
+`}
+  testCode={`import numpy as np
+
+def patchify(img, P):
+    H, W, C = img.shape
+    return img.reshape(H//P, P, W//P, P, C).transpose(0,2,1,3,4).reshape(-1, P*P*C)
+
+# Test 1: output shape for 8x8 image, patch=4
+img1 = np.zeros((8, 8, 3))
+p1 = patchify(img1, 4)
+assert p1.shape == (4, 48), f"Expected (4, 48), got {p1.shape}"
+
+# Test 2: output shape for 16x16 image, patch=4
+img2 = np.zeros((16, 16, 3))
+p2 = patchify(img2, 4)
+assert p2.shape == (16, 48), f"Expected (16, 48), got {p2.shape}"
+
+# Test 3: correct N for 224x224, patch=16
+img3 = np.zeros((224, 224, 3))
+p3 = patchify(img3, 16)
+assert p3.shape == (196, 768), f"Expected (196, 768), got {p3.shape}"
+
+# Test 4: patch content correctness — top-left patch of a unit image
+img4 = np.arange(64).reshape(8, 8, 1).astype(float)
+p4 = patchify(img4, 4)
+expected_tl = img4[:4, :4, :].reshape(-1)
+assert np.allclose(p4[0], expected_tl), f"Top-left patch mismatch"
+
+# Test 5: total elements preserved
+img5 = np.random.rand(32, 32, 3)
+p5 = patchify(img5, 8)
+assert p5.shape == (16, 192), f"Expected (16, 192), got {p5.shape}"
+assert p5.size == img5.size, f"Total elements changed: {p5.size} vs {img5.size}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the patchify implementation, why is transpose(0,2,1,3,4) needed after the first reshape?", options: [
+    { text: "After reshape to (H//P, P, W//P, P, C), axis 1 (inner height) and axis 2 (patch column) are interleaved; transposing brings H//P and W//P adjacent so each patch's pixels are contiguous in memory", correct: true, explain: "reshape(H//P, P, W//P, P, C) interleaves the patch-row index (axis 0) with intra-patch row (axis 1) and patch-column (axis 2) with intra-patch col (axis 3). Transposing to (0,2,1,3,4) groups by patch first, then by intra-patch pixels, so the final reshape(-1, P*P*C) correctly flattens each patch." },
+    { text: "The transpose is needed to convert row-major storage to column-major storage for NumPy compatibility", correct: false, explain: "NumPy uses row-major (C order) by default and the implementation stays in row-major. The transpose is needed to reorder the patch and pixel dimensions, not to change memory layout conventions." },
+    { text: "Without the transpose, the reshape would fail because NumPy cannot reshape non-contiguous arrays", correct: false, explain: "NumPy can reshape non-contiguous arrays (it copies if needed). The transpose is logically necessary to produce correctly grouped patches, not for a technical reshape limitation." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2010.11929.pdf" title="ViT: An Image is Worth 16x16 Words" />
+
+Suggested reading order: §3 (Method — full model description) → §3.1 (Patch Embedding — linear projection and position embeddings) → §4.2 (Scaling — JFT-300M results showing ViT beats ResNets at scale).
+
+</StageSection>
