@@ -1,0 +1,295 @@
+---
+slug: voyager
+title: "Voyager: An Open-Ended Embodied Agent with Large Language Models"
+authors: "Wang, Xie, Jiang, Mandlekar, Xiao, Zhu, Fan, Anandkumar"
+year: 2023
+era: agents
+arxivId: "2305.16291"
+estimatedMinutes: 50
+prerequisites: ["react"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import SkillLibrary from "../../components/widgets/SkillLibrary.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+General-purpose agents struggle in open-ended environments like Minecraft because they face two compounding problems. First, tasks have long horizons: surviving and thriving requires hundreds of interdependent steps — chop wood, craft tools, mine stone, smelt iron — none of which can be solved with a single prompt. Second, every skill is potentially useful again: if an agent learns to mine coal in episode 3, it shouldn't re-derive that procedure from scratch in episode 47. Prior embodied agents either hard-coded a fixed skill set (brittle) or used raw action traces (non-reusable when the world changes). The result: agents that plateau early and never compound their knowledge.
+
+Voyager's insight is to treat a growing **skill library** as the agent's long-term memory and to write skills as executable code rather than recorded action sequences. Code generalizes: `mineWood(count=10)` works regardless of the agent's exact starting position, whereas a trace of button presses replays incorrectly whenever the world layout differs. Voyager builds three mutually reinforcing modules on GPT-4: (1) an **automatic curriculum** that proposes progressively harder tasks, (2) a **skill library** that stores verified JavaScript/Mineflayer code snippets keyed by natural-language descriptions and retrieved by embedding similarity, and (3) an **iterative prompting** loop that writes, executes, receives environment feedback, and self-improves the code until it passes.
+
+<PredictThenReveal client:load predictPrompt="Before touching the widget: if you slide the episode counter from 0 to 4, you expect to see 4 skills unlock in sequence. Which skill do you predict unlocks last — `craftFurnace`, `mineCoal`, or `mineStone`? And why does the dependency graph matter for that answer?">
+  `craftFurnace` and `mineCoal` both unlock at episode 4 and 5, but `mineStone` unlocks at episode 3 because it is a prerequisite for both — you need stone tools to mine efficiently. The dependency graph matters because skills are not independent: `smeltIron` requires `craftFurnace` AND `mineCoal` AND `mineIron`, all of which require `mineStone`. The library grows as a directed acyclic graph, not a flat list, and the curriculum must respect this topological order.
+</PredictThenReveal>
+
+**Interact with the widget:** slide the episode counter from 1 to 8 and watch skills unlock one by one. Then toggle "Show dependencies" to reveal the dependency graph. Notice how `smeltIron` has three incoming edges — it is gated on three earlier skills all appearing in the library. This is the structure that emerges naturally when skills are stored as composable code with explicit function calls.
+
+<SkillLibrary client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: at episode 6 the library contains 6 skills. If a new task arrives that requires `smeltIron`, which stored skills would the retrieval system likely surface, and why would using code snippets (rather than action traces) make those retrieved skills directly reusable?">
+  The retrieval system would surface `mineIron`, `craftFurnace`, and `mineCoal` because their natural-language descriptions are semantically close to "smelt iron ore." Code snippets are directly callable: `smeltIron()` can internally invoke `craftFurnace()` and `mineCoal()` by name, and those functions still work regardless of the agent's current map coordinates. An action trace (e.g., "move 3 blocks north, break block at 2,64,5") is position-dependent and breaks whenever the world is regenerated — which happens constantly in Minecraft.
+</PredictThenReveal>
+
+<SrsCard id="voyager-three-modules" paper="voyager" prompt="What are Voyager's three core modules and what does each do?" answer="1. Automatic curriculum: GPT-4 proposes the next task by conditioning on current inventory, completed tasks, and failed tasks — always pushing toward new unexplored content. 2. Skill library: stores (description, code, embedding) triples; retrieves top-k skills by cosine similarity between query embedding and stored embeddings; new skills are added only after passing execution verification. 3. Iterative prompting loop: GPT-4 writes Mineflayer JavaScript, the code runs in the Minecraft environment, execution feedback (errors, inventory changes, console output) is appended to the prompt, and GPT-4 rewrites the code — cycling until the task succeeds or a retry limit is hit." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "Why does Voyager store skills as executable code rather than as recorded action traces?", options: [
+    { text: "Code generalizes across world states: a function like `mineWood(count)` works regardless of starting position or map layout, because it encodes the goal abstractly. An action trace encodes a specific button sequence tied to a particular world configuration, and replays incorrectly whenever the layout differs.", correct: true, explain: "Minecraft worlds are procedurally generated and reset between episodes. A recorded trace of 'move north 5 blocks, break block at coordinates (12, 64, -3)' is useless in a new world where the tree is at (40, 64, 7). A code function queries the environment to find a tree and navigates to it dynamically, so it works in any layout." },
+    { text: "Code is more compact to store than action traces, reducing the memory footprint of the skill library so more skills fit in context when prompting GPT-4.", correct: false, explain: "Compactness is a minor secondary benefit, not the primary reason. The critical advantage is generalization: code is world-state-agnostic while action traces are not. Even if traces were shorter, they would still fail on novel world layouts." },
+    { text: "GPT-4 was pretrained on GitHub code, so it can only read and write code — it cannot generate or interpret action-trace formats.", correct: false, explain: "GPT-4 can certainly process action traces; it can read and generate many formats. The design choice to use code is not a capability limitation but an architectural one: code composes and generalizes in ways that traces do not." },
+  ]},
+  { prompt: "Voyager's automatic curriculum proposes new tasks by conditioning on the agent's current state. What three inputs does the curriculum module use?", options: [
+    { text: "Current inventory/environment state, completed task history, and failed task history. Together these tell GPT-4 what the agent can do, what it has already done, and what it has tried and failed — allowing it to propose the most informative next challenge.", correct: true, explain: "The curriculum prompt includes: (1) current inventory and nearby blocks so GPT-4 knows what resources are available; (2) a list of completed tasks so it avoids repeating mastered skills; (3) a list of failed tasks so it avoids re-attempting currently impossible tasks. This three-signal conditioning ensures progressive difficulty." },
+    { text: "The agent's current coordinates, a random seed, and the number of elapsed game ticks — so the curriculum generates spatially diverse tasks that cover the entire map.", correct: false, explain: "Spatial diversity is not the goal. The curriculum aims for skill diversity and progressive difficulty, not geographic coverage. Coordinates and game ticks are not curriculum inputs in the Voyager design." },
+    { text: "The current skill library size, the Minecraft version number, and a user-provided difficulty setting that controls how fast the curriculum escalates challenge.", correct: false, explain: "There is no user-provided difficulty setting. The curriculum is fully automated. The key inputs are the agent's current state (inventory, environment) and its task history (completed and failed), which implicitly encode difficulty level." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The skill library `M` stores entries of the form `(d_i, c_i, e_i)` where `d_i` is a natural-language description, `c_i` is the executable code, and `e_i = \text{embed}(d_i)` is the embedding vector. Retrieval for a query description `q` selects the top-k entries by cosine similarity:
+
+<Math display expr="\text{top}_k(q,\, M) = \underset{k\text{-largest}}{\operatorname{argmax}}_{i} \;\frac{e_i \cdot \text{embed}(q)}{\|e_i\|\;\|\text{embed}(q)\|}" />
+
+The automatic curriculum generates the next task `t*` by maximizing expected exploration conditioned on full agent state:
+
+<Math display expr="t^* = \text{LLM}_{\text{curriculum}}\!\bigl(\text{state},\; C_{\text{done}},\; C_{\text{fail}}\bigr)" />
+
+where `state` encodes current inventory and nearby blocks, `C_{\text{done}}` is the set of completed tasks, and `C_{\text{fail}}` is the set of recently failed tasks. This is not an explicit optimization — the LLM acts as a learned heuristic that has absorbed exploration principles during pretraining.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why store skills as code and retrieve them by embedding similarity rather than by exact name lookup?",
+    options: [
+      { text: "A new task description like 'gather fuel for the furnace' will not exactly match the stored name 'mineCoal', but its embedding will be close to `embed('mine coal to fuel a furnace')`. Embedding-based retrieval surfaces semantically relevant skills even when surface names differ, and code generalizes across world states unlike action traces.", correct: true, explain: "The retrieval step must bridge a vocabulary gap: the curriculum generates free-form task descriptions, while stored skills have whatever names the code author chose. Cosine similarity in embedding space closes this gap. Additionally, storing code rather than traces means the retrieved snippet is directly executable in new world conditions — it navigates to coal dynamically rather than replaying a fixed sequence of moves." },
+      { text: "Embedding lookup is faster than string comparison at scale — O(1) approximate nearest-neighbor versus O(n) exact string search — so the agent can retrieve skills in real time without latency.", correct: false, explain: "At the scale of Voyager's skill library (hundreds of entries), O(n) string search is trivially fast. Latency is not the motivation. The reason for embeddings is semantic coverage: matching meaning rather than matching strings." },
+      { text: "The Minecraft API requires skills to be referenced by numeric IDs, so embedding vectors are used as a numeric encoding to interface with the game engine.", correct: false, explain: "The Minecraft Mineflayer API references skills by JavaScript function name, not numeric ID. Embedding vectors are a retrieval mechanism entirely internal to Voyager, not an API requirement." },
+    ],
+  }}
+  revealExpr="\text{top}_k(q,M): \text{semantic match} \Rightarrow \text{reusable code retrieved}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "The curriculum LLM conditions on both completed tasks and failed tasks. Why are failed tasks necessary — wouldn't completed tasks alone be sufficient to infer what to try next?",
+    options: [
+      { text: "Completed tasks tell the curriculum what the agent can do, but not what it has tried and found impossible given current resources. Failed tasks prevent the curriculum from re-proposing tasks the agent repeatedly cannot complete yet — without them, the curriculum might keep proposing 'craft diamond sword' before the agent has any diamonds.", correct: true, explain: "Imagine an agent that has completed wood and stone tasks but has no iron yet. Completed tasks alone would let the curriculum propose iron-tier tasks, which would fail repeatedly. The failed task list creates a negative signal: 'do not re-propose tasks from this list until new skills or resources become available.' This makes the curriculum adaptive and avoids wasted retry loops." },
+      { text: "Failed tasks contain error messages from the Mineflayer executor, which the curriculum uses to debug the skill code rather than to choose the next task.", correct: false, explain: "Error messages are used by the iterative prompting loop to fix code, not by the curriculum. The curriculum uses failed task names as a signal to avoid re-proposing currently impossible challenges. The two modules — curriculum and iterative prompter — use failure information differently." },
+      { text: "The curriculum is a supervised model fine-tuned on (completed, failed) → next-task pairs, so both inputs are required by the model's training distribution.", correct: false, explain: "The curriculum uses a frozen GPT-4 via prompting, not a fine-tuned model. Completed and failed task lists are simply included in the prompt as context. There is no fine-tuning of the curriculum component." },
+    ],
+  }}
+  revealExpr="t^* = \text{LLM}_{\text{curr}}(\text{state},\; C_{\text{done}},\; C_{\text{fail}}) \Rightarrow \text{avoid already-failed, push frontier}"
+/>
+
+<SrsCard id="voyager-retrieval-formula" paper="voyager" prompt="Write the Voyager skill-retrieval formula and explain each term." answer="top_k(q, M) = argmax_{k-largest} cos_sim(embed(q), e_i) where q is the natural-language task description, M is the skill library, e_i = embed(d_i) is the pre-computed embedding of stored description d_i, and embed(q) is the query embedding. Cosine similarity normalizes both vectors so length differences don't affect ranking — only directional alignment in embedding space matters." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the skill library formula, cosine similarity is used rather than Euclidean distance. What is the key property of cosine similarity that makes it preferable for embedding-based retrieval?", options: [
+    { text: "Cosine similarity measures the angle between vectors, ignoring their magnitudes. This means two descriptions that are semantically equivalent but encoded at different embedding norms (due to tokenizer differences) still receive a similarity of 1.0. Euclidean distance would penalize them for differing lengths.", correct: true, explain: "Embedding models often produce vectors of varying norms depending on description length or token count. 'mine coal' and 'use a pickaxe to extract coal from stone' encode the same concept but may differ in L2 norm. Cosine similarity normalizes both vectors before comparing, so the semantic alignment is captured regardless of magnitude. This is why information retrieval systems (BM25, dense retrieval) universally prefer cosine similarity." },
+    { text: "Cosine similarity is O(1) to compute using lookup tables, while Euclidean distance requires O(d) operations per pair, making cosine faster for high-dimensional embeddings.", correct: false, explain: "Both cosine similarity and Euclidean distance require O(d) operations per pair (d = embedding dimension). There is no asymptotic speed difference. The choice is about invariance to magnitude, not computational complexity." },
+    { text: "Cosine similarity is bounded between 0 and 1, making it easy to set a hard threshold (e.g., 0.5) that separates relevant from irrelevant skills, while Euclidean distance is unbounded.", correct: false, explain: "Cosine similarity ranges from -1 to 1 (not 0 to 1) for general vectors, and from 0 to 1 for non-negative vectors. More importantly, the threshold choice is still empirical in both cases — boundedness does not automatically determine a natural cutoff. The core advantage is magnitude-invariance." },
+  ]},
+  { prompt: "Voyager's iterative prompting loop writes code, executes it, and feeds back the execution result. What information from the execution environment is included in the feedback prompt?", options: [
+    { text: "Error messages from the Mineflayer executor, changes in the agent's inventory, console output, and a description of nearby blocks — all appended to the conversation so GPT-4 can diagnose failures and rewrite the code.", correct: true, explain: "The iterative loop works because the feedback is rich and grounded: 'ReferenceError: bot.dig is not a function' tells GPT-4 the API call is wrong; 'inventory: {wood: 5}' confirms the collection succeeded; 'nearby blocks: stone, dirt' tells GPT-4 what resources are reachable. This multi-signal feedback is what lets GPT-4 self-debug without any gradient update." },
+    { text: "Only the final success or failure flag — a boolean indicating whether the task objective was reached — which GPT-4 uses to decide whether to retry or move on.", correct: false, explain: "A binary success/failure signal is insufficient for debugging. Without the error message, GPT-4 cannot distinguish a wrong API call from a resource-not-found error from a logic bug. Voyager's key design decision is to pass the full execution context back so the model can perform targeted edits." },
+    { text: "The agent's GPS coordinates and the current game tick, which GPT-4 uses to replan navigation routes when the previous code caused the agent to get stuck.", correct: false, explain: "While coordinates may be included in the state description, the primary debugging signal is the error output and inventory state, not GPS. Navigation replanning is handled by the Mineflayer pathfinding library, not by GPT-4 manually computing routes." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the five steps of Voyager's main episode loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Curriculum proposes next task t = LLM_curriculum(state, completed_tasks, failed_tasks)",
+  "Retrieve top-k skills from library: context_skills = top_k(embed(t), M)",
+  "Iteratively prompt GPT-4 to write/debug code with execution feedback until verified or retry limit hit",
+  "If task succeeded: add new skill to library — M.add(description, code, embed(description))",
+  "Mark task complete or failed; update completed_tasks / failed_tasks; advance to next episode",
+]} />
+
+Fill in the blank — the line that inserts a newly verified skill into the library:
+
+```text
+def add_skill(library, description, code):
+    embedding = embed(description)
+    library.append(_______)
+    return library
+```
+
+<FillBlank answer="(description, code, embedding)" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the Voyager loop, skills are only added to the library after the task succeeds. Why not add the skill optimistically after the first code draft, before execution?", options: [
+    { text: "An unverified code draft may contain bugs that cause silent failures or corrupt game state. Adding it to the library would contaminate future retrievals: a broken `smeltIron` snippet would be retrieved and re-used in later tasks, propagating the bug. Verification ensures the library only contains working, reusable skills.", correct: true, explain: "The skill library is the agent's long-term memory. Polluting it with broken code is worse than not storing the skill at all, because future tasks that retrieve the broken snippet will fail silently — the agent reuses the bad code without knowing it's faulty. Requiring execution success as a precondition for library insertion acts as a quality gate, keeping the library clean." },
+    { text: "GPT-4's token budget is consumed by the iterative loop, so there is no capacity left to embed and store the skill until the loop terminates and context is cleared.", correct: false, explain: "Token budget is a real concern for long conversations, but it is not the reason for post-success insertion. The embedding step is cheap and could happen at any point. The design choice is about correctness: only verified skills earn a place in the library." },
+    { text: "The Minecraft API requires skills to be compiled and type-checked before they can be registered, so Mineflayer automatically blocks unverified code from being stored.", correct: false, explain: "Mineflayer is a JavaScript API and does not enforce a pre-storage compilation step. The verification requirement is a Voyager design choice for quality control, not an API constraint." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement a minimal **skill-library retrieval** in NumPy. Given a list of skill dicts (each with `"description"` and `"embedding"` as a `np.ndarray`), a `query_embedding` (`np.ndarray`), and an integer `k`, return the top-k skills sorted by descending cosine similarity to the query. If the library has fewer than `k` entries, return all of them.
+
+<HintFade client:load
+  hints={[
+    "Cosine similarity between two vectors a and b is `dot(a, b) / (norm(a) * norm(b))`. Compute it for each skill's embedding against the query_embedding using a loop or a vectorised stack.",
+    "Stack all embeddings into a matrix E of shape (n, d) with `np.stack([s['embedding'] for s in skills])`. Then compute all cosine similarities at once: `sims = E @ query_embedding / (np.linalg.norm(E, axis=1) * np.linalg.norm(query_embedding))`. Use `np.argsort(sims)[::-1]` to get indices in descending order.",
+    "Full solution: stack embeddings, compute sims, argsort descending, slice to min(k, n), return `[skills[i] for i in top_indices]`. Edge case: if skills is empty return [].",
+  ]}
+  solutionCode={`import numpy as np
+
+def retrieve_top_k(skills, query_embedding, k):
+    """
+    skills: List[Dict] with keys 'description' (str) and 'embedding' (np.ndarray)
+    query_embedding: np.ndarray of the same dimension as skill embeddings
+    k: int — number of top skills to return
+    Returns: List[Dict] of up to k skills sorted by descending cosine similarity
+    """
+    if not skills:
+        return []
+    E = np.stack([s["embedding"] for s in skills])          # (n, d)
+    q = query_embedding / np.linalg.norm(query_embedding)   # unit query
+    norms = np.linalg.norm(E, axis=1, keepdims=True)        # (n, 1)
+    E_norm = E / norms                                       # unit skill vecs
+    sims = E_norm @ q                                        # (n,)
+    top_indices = np.argsort(sims)[::-1][:k]
+    return [skills[i] for i in top_indices]`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def retrieve_top_k(skills, query_embedding, k):
+    """
+    skills: List[Dict] with 'description' (str) and 'embedding' (np.ndarray)
+    query_embedding: np.ndarray
+    k: int
+    Returns: top-k skills by cosine similarity (descending)
+    """
+    # TODO: implement
+    pass
+
+# Quick sanity check
+rng = np.random.default_rng(42)
+skills = [
+    {"description": "mine coal", "embedding": rng.standard_normal(8)},
+    {"description": "craft furnace", "embedding": rng.standard_normal(8)},
+    {"description": "smelt iron", "embedding": rng.standard_normal(8)},
+]
+query = rng.standard_normal(8)
+result = retrieve_top_k(skills, query, k=2)
+if result is not None:
+    for s in result:
+        print(s["description"])
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def retrieve_top_k(skills, query_embedding, k):
+    if not skills:
+        return []
+    E = np.stack([s["embedding"] for s in skills])
+    q = query_embedding / np.linalg.norm(query_embedding)
+    norms = np.linalg.norm(E, axis=1, keepdims=True)
+    E_norm = E / norms
+    sims = E_norm @ q
+    top_indices = np.argsort(sims)[::-1][:k]
+    return [skills[i] for i in top_indices]
+`}
+  testCode={`import numpy as np
+
+def retrieve_top_k(skills, query_embedding, k):
+    if not skills:
+        return []
+    E = np.stack([s["embedding"] for s in skills])
+    q = query_embedding / np.linalg.norm(query_embedding)
+    norms = np.linalg.norm(E, axis=1, keepdims=True)
+    E_norm = E / norms
+    sims = E_norm @ q
+    top_indices = np.argsort(sims)[::-1][:k]
+    return [skills[i] for i in top_indices]
+
+# Test 1: returns exactly k items when library has more than k skills
+d = 16
+rng = np.random.default_rng(0)
+skills = [{"description": f"skill_{i}", "embedding": rng.standard_normal(d)} for i in range(5)]
+query = rng.standard_normal(d)
+result = retrieve_top_k(skills, query, k=3)
+assert len(result) == 3, f"Expected 3, got {len(result)}"
+
+# Test 2: top item is the nearest skill to the query
+# Construct a query and make skill_0 almost identical to it
+base = rng.standard_normal(d)
+skills2 = [
+    {"description": "near", "embedding": base + 0.01 * rng.standard_normal(d)},
+    {"description": "far1", "embedding": rng.standard_normal(d)},
+    {"description": "far2", "embedding": rng.standard_normal(d)},
+]
+result2 = retrieve_top_k(skills2, base, k=1)
+assert result2[0]["description"] == "near", f"Top skill should be 'near', got {result2[0]['description']}"
+
+# Test 3: handles library smaller than k — returns all skills
+small = [{"description": "only", "embedding": rng.standard_normal(d)}]
+result3 = retrieve_top_k(small, query, k=5)
+assert len(result3) == 1, f"Expected 1 (library size), got {len(result3)}"
+
+# Test 4: empty library returns empty list
+result4 = retrieve_top_k([], query, k=3)
+assert result4 == [], f"Expected [], got {result4}"
+
+# Test 5: results are sorted descending by similarity
+e1 = base.copy()
+e2 = -base.copy()  # opposite direction — lowest similarity
+e3 = base * 0.5 + rng.standard_normal(d) * 0.1
+skills5 = [
+    {"description": "A", "embedding": e1},
+    {"description": "B", "embedding": e2},
+    {"description": "C", "embedding": e3},
+]
+result5 = retrieve_top_k(skills5, base, k=3)
+assert result5[0]["description"] == "A", f"Highest sim skill should be first, got {result5[0]['description']}"
+assert result5[-1]["description"] == "B", f"Lowest sim skill should be last, got {result5[-1]['description']}"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the retrieve_top_k implementation, both the query and skill embeddings are L2-normalized before the dot product. What happens if you skip normalization and use raw dot products instead?", options: [
+    { text: "Without normalization, a skill with a large-magnitude embedding dominates the ranking even if it is not semantically close to the query. For example, a long description that produces a high-norm embedding would outscore a perfectly semantically aligned skill with a low-norm embedding. Normalization ensures ranking reflects angular similarity, not vector length.", correct: true, explain: "Dot product = norm(a) * norm(b) * cos(theta). If norms vary across skills — which they do when descriptions have different lengths or when embeddings are not constrained to the unit sphere — then a high-norm skill with cos(theta)=0.6 could outscore a low-norm skill with cos(theta)=0.95. Normalizing first isolates the directional component and gives a pure semantic ranking." },
+    { text: "Without normalization the dot product always returns negative values, which would cause np.argsort to sort in the wrong direction.", correct: false, explain: "Raw dot products can be positive or negative regardless of normalization. The sign depends on the directions of the vectors, not their magnitudes. Missing normalization does not invert the sort direction; it introduces magnitude bias." },
+    { text: "The result would be identical because numpy's matrix multiply automatically normalizes inputs to prevent numerical overflow on large vectors.", correct: false, explain: "NumPy does not normalize inputs to matrix operations. Large vectors can indeed cause numerical issues, but the primary semantic consequence of skipping normalization is magnitude bias in rankings, not overflow." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2305.16291.pdf" title="Voyager: An Open-Ended Embodied Agent with Large Language Models (Wang et al. 2023)" />
+
+Suggested reading order: §1 (Introduction — motivation from hard-coded vs. open-ended agents) → §3 (Method — overview of the three modules) → §3.3 (Skill Library — storage, retrieval, and verification details).
+
+</StageSection>
