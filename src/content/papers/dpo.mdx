@@ -1,0 +1,283 @@
+---
+slug: dpo
+title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model"
+authors: "Rafailov, Sharma, Mitchell, Manning, Ermon, Finn"
+year: 2023
+era: alignment
+arxivId: "2305.18290"
+estimatedMinutes: 50
+prerequisites: ["instructgpt"]
+---
+import StageSection from "../../components/stages/StageSection.astro";
+import Math from "../../components/math/Math.astro";
+import { PredictThenReveal } from "../../components/stages/PredictThenReveal.tsx";
+import { FillBlank } from "../../components/stages/FillBlank.tsx";
+import { LineReorder } from "../../components/stages/LineReorder.tsx";
+import { DerivationStep } from "../../components/math/DerivationStep.tsx";
+import { HintFade } from "../../components/code/HintFade.tsx";
+import { PyRunner } from "../../components/code/PyRunner.tsx";
+import { AssertionTests } from "../../components/code/AssertionTests.tsx";
+import { RetrievalCheck } from "../../components/stages/RetrievalCheck.tsx";
+import { DpoLoss } from "../../components/widgets/DpoLoss.tsx";
+import SrsCard from "../../components/srs/SrsCard.astro";
+import PdfViewer from "../../components/pdf/PdfViewer.astro";
+
+<StageSection id="intuition" title="① Intuition">
+
+InstructGPT showed that RLHF can align language models to human preferences — but it requires a multi-stage pipeline: first train a reward model (RM) on preference pairs, then run PPO to optimize the policy against the RM while keeping it close to the reference policy via a KL-divergence penalty. That's two separate models, two separate training loops, and a dozen sensitive hyperparameters. If any part is misconfigured, the policy either reward-hacks the RM or barely moves from the SFT baseline.
+
+DPO (Rafailov et al., 2023) asks a deceptively simple question: is the reward model even necessary? The key insight is that the KL-regularized RL objective has a **closed-form optimal policy**: `pi*(y|x) ∝ pi_ref(y|x) exp(r(x,y) / beta)`. Inverting that relationship lets you express the reward implicitly as `r(x,y) = beta * log(pi*(y|x) / pi_ref(y|x)) + C(x)`. Plugging this implicit reward back into the Bradley-Terry preference loss causes the partition function `C(x)` to cancel — and what remains is a **simple supervised cross-entropy loss directly on the preference pairs**, parameterized by the policy itself. No explicit RM, no PPO.
+
+<PredictThenReveal client:load predictPrompt="Before using the widget: if the policy assigns much higher probability to the winning response than the reference does (large positive log-ratio for y_w) and much lower probability to the losing response (large negative log-ratio for y_l), what do you expect the DPO loss to look like? What happens when the log-ratios are equal?">
+  When `log(pi_theta(y_w) / pi_ref(y_w))` is large and positive and `log(pi_theta(y_l) / pi_ref(y_l))` is large and negative, the margin is large, `sigmoid(beta * margin)` approaches 1, and `-log(sigmoid(...))` approaches 0 — very low loss. The policy has correctly pushed probability mass toward winners and away from losers. When both log-ratios are equal the margin is zero, `sigmoid(0) = 0.5`, and the loss is `log(2) ≈ 0.693` — the model is maximally uncertain about the preference.
+</PredictThenReveal>
+
+**Interact with the widget:** set log-ratio winner to 2.0 and log-ratio loser to -2.0, observe the loss drop near zero. Then drag both sliders to the same value — watch the loss jump to log(2). Increase beta — notice that the same margin now produces a steeper preference signal (smaller loss for large margins, but also a sharper cliff near zero).
+
+<DpoLoss client:load />
+
+<PredictThenReveal client:load predictPrompt="After playing with the widget: why does a larger beta sharpen the preference signal? What is the trade-off at very large beta?">
+  Beta scales the implicit reward gap: `beta * margin`. Larger beta amplifies differences between log-ratios, making the sigmoid more decisive for the same margin — large margins produce near-zero loss much sooner. However, very large beta means even a tiny deviation from the reference policy's log-ratios triggers a large loss signal. The policy is forced to stay extremely close to `pi_ref`, limiting how much it can shift probability mass toward winners. This is the same KL-budget trade-off seen in PPO: high beta = conservative alignment, low beta = aggressive alignment with risk of reward hacking.
+</PredictThenReveal>
+
+<SrsCard id="dpo-core-insight" paper="dpo" prompt="What is the core insight that allows DPO to eliminate the reward model?" answer="The KL-regularized RL objective has a closed-form optimal policy: pi*(y|x) ∝ pi_ref(y|x) exp(r(x,y) / beta). Inverting this gives an implicit reward r(x,y) = beta * log(pi*(y|x) / pi_ref(y|x)) + C(x). When substituted into the Bradley-Terry preference loss, the prompt-dependent partition C(x) cancels symmetrically, leaving a direct supervised loss on the policy without requiring a separate reward model." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "DPO and InstructGPT both optimize for human preferences. What is the key structural difference in how they do it?", options: [
+    { text: "InstructGPT trains a separate reward model on preference data, then uses PPO to optimize the policy against the frozen RM with a KL penalty. DPO skips both steps — it directly optimizes a supervised loss derived by treating the policy itself as an implicit reward model, using the same preference data.", correct: true, explain: "DPO collapses the two-stage RLHF pipeline (RM training + PPO) into a single supervised objective. The key algebraic trick is reparameterizing the RM in terms of the policy and the reference policy, which causes the intractable partition function to cancel in the Bradley-Terry loss." },
+    { text: "InstructGPT uses pairwise preference data while DPO uses absolute quality scores from human raters, making the DPO signal richer but more expensive to collect.", correct: false, explain: "Both methods use pairwise preference data (winner/loser pairs). DPO does not require a different or richer annotation format — it uses exactly the same data that RLHF would use for reward model training." },
+    { text: "DPO uses a larger KL penalty than InstructGPT to compensate for not having a reward model, forcing the policy to stay very close to the SFT initialization.", correct: false, explain: "DPO's beta plays the same role as InstructGPT's KL coefficient, and it is a tunable hyperparameter in the same range. DPO does not structurally require a larger beta — the difference is architectural (no separate RM), not a larger regularization budget." },
+  ]},
+  { prompt: "Why does the partition function C(x) cancel in the DPO derivation?", options: [
+    { text: "C(x) is the log-normalizer of the optimal policy and depends only on the prompt x, not on the response y. When the implicit reward is substituted into the Bradley-Terry preference loss, C(x) appears identically in both the winner term and the loser term and subtracts out.", correct: true, explain: "The implicit reward is r(x,y) = beta*log(pi*(y|x)/pi_ref(y|x)) + C(x). In the Bradley-Terry loss, the difference r(x,y_w) - r(x,y_l) is taken. C(x) subtracts symmetrically: [... + C(x)] - [... + C(x)] = 0. This is the mathematical miracle that makes DPO tractable without computing the partition function explicitly." },
+    { text: "C(x) is set to zero by a normalization convention applied to the reward model before substitution, which simplifies the algebra.", correct: false, explain: "C(x) is not set to zero — it is nonzero in general (it is the log of the normalizing constant of the optimal policy). It cancels algebraically because it appears in both terms of the pairwise loss difference, not because of any convention." },
+    { text: "C(x) cancels because the Bradley-Terry model assumes all responses to the same prompt have equal prior probability, making the partition function a constant.", correct: false, explain: "The Bradley-Terry model makes no such assumption. C(x) cancels because it is prompt-dependent but response-independent — and the preference loss only involves differences between responses to the same prompt, so prompt-level constants vanish." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="math" title="② Math">
+
+The derivation starts from the KL-regularized RL objective that InstructGPT's PPO phase optimizes:
+
+<Math display expr="\max_{\pi_\theta}\; \mathbb{E}_{x \sim \mathcal{D},\, y \sim \pi_\theta(y|x)}\!\left[r(x,y) - \beta\,\mathrm{KL}\!\left(\pi_\theta(y\mid x)\,\|\,\pi_{\text{ref}}(y\mid x)\right)\right]" />
+
+This objective has a closed-form optimal solution. The unique policy that maximizes it is:
+
+<Math display expr="\pi^*(y \mid x) = \frac{1}{Z(x)}\,\pi_{\text{ref}}(y \mid x)\exp\!\left(\frac{r(x,y)}{\beta}\right)" />
+
+where `Z(x)` is the partition function (normalizing constant). Inverting this gives the implicit reward as a function of the optimal policy:
+
+<Math display expr="r(x,y) = \beta \log \frac{\pi^*(y \mid x)}{\pi_{\text{ref}}(y \mid x)} + \beta \log Z(x)" />
+
+Substituting into the Bradley-Terry preference loss with `C(x) = beta * log Z(x)`:
+
+<Math display expr="\mathcal{L}_{\text{DPO}}(\theta) = -\mathbb{E}_{(x,y_w,y_l)\sim\mathcal{D}}\!\left[\log \sigma\!\left(\beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_{\text{ref}}(y_w \mid x)} - \beta \log \frac{\pi_\theta(y_l \mid x)}{\pi_{\text{ref}}(y_l \mid x)}\right)\right]" />
+
+The `C(x)` terms cancel because they appear identically in both the `y_w` and `y_l` terms of the preference difference. What remains depends only on log-ratios that are computable from `pi_theta` and the frozen `pi_ref` — no explicit reward model, no partition function evaluation.
+
+<DerivationStep client:load
+  question={{
+    prompt: "Why does the partition function C(x) = beta * log Z(x) cancel when we substitute the implicit reward into the Bradley-Terry loss?",
+    options: [
+      { text: "The Bradley-Terry loss uses the difference r(x,y_w) - r(x,y_l). Since C(x) depends only on the prompt x (not on the response y), it appears identically in both terms and subtracts to zero: [beta*log(pi/pi_ref)(y_w) + C(x)] - [beta*log(pi/pi_ref)(y_l) + C(x)] = beta*log(pi/pi_ref)(y_w) - beta*log(pi/pi_ref)(y_l).", correct: true, explain: "This is the mathematical cornerstone of DPO. C(x) = beta*log Z(x) is a function of x alone because Z(x) sums over all possible responses y — it does not depend on which specific y we are evaluating. The pairwise preference loss always compares two responses to the same prompt, so C(x) cancels exactly." },
+      { text: "The partition function cancels because pi_ref is normalized, so its log-probabilities sum to zero over all responses, making Z(x) = 1 and C(x) = 0.", correct: false, explain: "Z(x) is not 1 in general. Z(x) = sum_y pi_ref(y|x) exp(r(x,y)/beta), which depends on both pi_ref and the reward function. The cancellation is not about normalization of pi_ref — it is about the pairwise difference structure of the Bradley-Terry loss." },
+      { text: "The partition function is approximated as constant across the training dataset, so it is absorbed into the learning rate as a global scaling factor.", correct: false, explain: "No approximation is made. The cancellation is exact. Z(x) can vary across prompts (it is prompt-dependent), but because we always compare responses to the same prompt, the C(x) term appears in both the winner and loser implicit reward and cancels algebraically." },
+    ],
+  }}
+  revealExpr="r(x,y_w) - r(x,y_l) = \beta\log\frac{\pi^*(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta\log\frac{\pi^*(y_l|x)}{\pi_{\text{ref}}(y_l|x)} \quad \text{(C(x) cancels)}"
+/>
+
+<DerivationStep client:load
+  question={{
+    prompt: "What is the role of beta in DPO, and what happens to the loss landscape as beta grows large?",
+    options: [
+      { text: "Beta scales the implicit reward gap: larger beta amplifies the difference in log-ratios, sharpening the preference signal. Very large beta forces the policy to stay extremely close to pi_ref (small KL budget), because even tiny deviations produce large loss signals. The policy can barely redistribute probability mass from losers to winners.", correct: true, explain: "Beta in DPO plays the same role as the KL penalty coefficient in the PPO objective — it sets the KL budget. Mathematically, the gradient of L_DPO includes a factor of beta, so larger beta means stronger per-step updates toward the reference policy whenever the log-ratios deviate. The optimal policy under large beta is nearly pi_ref." },
+      { text: "Beta controls the learning rate of the policy update; larger beta speeds up training but risks instability near the preference boundary where the sigmoid saturates.", correct: false, explain: "Beta is not the learning rate — it is a hyperparameter in the loss function that controls the KL-regularization strength. It appears inside the sigmoid argument, shaping the preference geometry. The learning rate is a separate optimizer hyperparameter." },
+      { text: "Beta has no effect on the loss landscape; it only rescales the implicit reward values, which cancel when the policy converges to the global optimum.", correct: false, explain: "Beta does not cancel out — it directly shapes the loss landscape throughout training. Even at convergence, a larger beta means the optimal policy is closer to pi_ref (lower KL). The value of beta determines the trade-off between preference optimization and staying close to the reference." },
+    ],
+  }}
+  revealExpr="\beta \uparrow \;\Rightarrow\; \text{KL budget shrinks} \;\Rightarrow\; \pi_\theta \approx \pi_{\text{ref}} \;\Rightarrow\; \text{alignment gain} \approx 0"
+/>
+
+<SrsCard id="dpo-loss-formula" paper="dpo" prompt="Write the DPO loss and identify what each term represents." answer="L_DPO = -E[log sigmoid(beta * log(pi_theta(y_w|x)/pi_ref(y_w|x)) - beta * log(pi_theta(y_l|x)/pi_ref(y_l|x)))]. The first log-ratio is the implicit reward advantage of the winner under the current policy vs reference; the second log-ratio is the same for the loser. Their difference is the implicit reward gap. Minimizing the loss pushes the policy to assign relatively higher probability to winners and lower to losers, compared to the reference." />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "DPO optimizes the same underlying objective as PPO-based RLHF. Why then might their trained policies differ in practice?", options: [
+    { text: "Both optimize the KL-regularized preference objective, but the optimization paths differ: PPO alternates between rollout and policy update steps with an explicit RM, while DPO uses offline preference data and a fixed reference. DPO's offline nature means it never generates new completions during training, so it cannot correct for distribution shift between pi_theta and the preference data collection policy.", correct: true, explain: "DPO is an offline method — it trains directly on a fixed dataset of (prompt, y_w, y_l) pairs. If the policy shifts significantly from the behavior policy used to collect those pairs, the gradient estimates become biased. PPO does online rollouts so it can collect fresh data under the current policy. This on-policy vs off-policy distinction is a practical difference even when the underlying objective is the same." },
+    { text: "DPO uses a different objective than PPO: it minimizes cross-entropy over preference pairs, while PPO maximizes expected reward. These are not equivalent in the finite-data regime.", correct: false, explain: "In the population limit, DPO optimizes the same objective as the KL-regularized RL problem that PPO solves. The equivalence is exact at the optimum. Differences arise from optimization trajectory (offline vs online) and approximation errors, not from a fundamentally different objective." },
+    { text: "DPO requires a larger model than PPO because it must implicitly represent both the policy and the reward model in the same parameter set.", correct: false, explain: "DPO uses the same model architecture as PPO would use for the policy. The implicit reward representation does not require additional parameters — it emerges from the log-ratio of the policy to pi_ref, which is computed from the same model at inference time." },
+  ]},
+  { prompt: "During DPO training, the reference policy pi_ref is frozen. What would happen if pi_ref were updated jointly with pi_theta?", options: [
+    { text: "If pi_ref were updated to track pi_theta, the log-ratios log(pi_theta/pi_ref) would collapse toward zero throughout training. The implicit reward gap would shrink and the gradient signal would vanish — the loss would become uninformative regardless of whether the policy prefers winners over losers.", correct: true, explain: "The DPO loss relies on the log-ratio log(pi_theta(y)/pi_ref(y)) as the implicit reward. If pi_ref = pi_theta, every log-ratio is zero, every margin is zero, and sigmoid(0) = 0.5 gives loss = log(2) constantly. The training signal disappears. Freezing pi_ref is essential for the contrast between the current policy and the reference to carry meaningful information." },
+    { text: "Updating pi_ref jointly would make DPO equivalent to supervised fine-tuning on the winning responses only, removing the contrastive preference signal.", correct: false, explain: "Even with a moving pi_ref, the pairwise structure would remain (y_w vs y_l). The problem is not equivalence to SFT but collapse of the log-ratio signal. The gradient would vanish when pi_theta ≈ pi_ref, not just shift to a different objective." },
+    { text: "Updating pi_ref would be equivalent to increasing beta, as the effective KL budget between pi_theta and pi_ref would grow.", correct: false, explain: "Updating pi_ref to track pi_theta would shrink the log-ratio (not grow it), effectively sending beta*margin toward zero. This is the opposite of increasing beta, which sharpens the preference signal." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pseudo" title="③ Pseudo code">
+
+Arrange the four steps of the DPO training loop in the correct order:
+
+<LineReorder client:load lines={[
+  "Sample a preference pair (x, y_w, y_l) from the offline preference dataset",
+  "Compute log-ratios: logr_w = log pi_theta(y_w|x) - log pi_ref(y_w|x); logr_l = log pi_theta(y_l|x) - log pi_ref(y_l|x)",
+  "Form DPO loss: L = -log sigmoid(beta * (logr_w - logr_l))",
+  "Backpropagate through L into pi_theta only (pi_ref is frozen)",
+]} />
+
+Fill in the blank — the margin inside the DPO loss sigmoid:
+
+```text
+def dpo_loss(logp_theta_w, logp_theta_l, logp_ref_w, logp_ref_l, beta):
+    logr_w = _______
+    logr_l = logp_theta_l - logp_ref_l
+    margin = beta * (logr_w - logr_l)
+    return -log(sigmoid(margin))
+```
+
+<FillBlank answer="logp_theta_w - logp_ref_w" client:load />
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the DPO training loop, why do we need to run a forward pass through the frozen pi_ref for every batch, rather than precomputing all reference log-probabilities once before training?", options: [
+    { text: "In practice you CAN precompute pi_ref log-probs once and cache them, since pi_ref is frozen throughout DPO training. This is a common efficiency optimization — it avoids a second forward pass per batch, halving the memory and compute overhead during training.", correct: true, explain: "Because pi_ref never updates, its log-probabilities log pi_ref(y|x) are deterministic functions of the data. You can run a single pass over the dataset with the frozen reference model before training begins, store the log-probs, and reuse them as static labels during DPO optimization. Many implementations do exactly this." },
+    { text: "pi_ref must be re-evaluated per batch because its output depends on the current pi_theta weights through a shared embedding layer.", correct: false, explain: "pi_ref is a completely frozen copy of the SFT model — it shares no trainable weights with pi_theta. Its output does not depend on pi_theta in any way. Precomputing its log-probs is safe and efficient." },
+    { text: "The DPO gradient requires the Jacobian of pi_ref with respect to the input tokens, which changes as the tokenizer is updated during training.", correct: false, explain: "The tokenizer is not updated during DPO training, and DPO does not require any gradient through pi_ref. Only pi_theta receives gradients. The gradient of L_DPO with respect to pi_theta involves log pi_ref(y|x) as a constant offset, not a differentiable term." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="code" title="④ Code (Python)">
+
+Implement the DPO loss in NumPy. Given arrays `logp_theta_w`, `logp_theta_l`, `logp_ref_w`, `logp_ref_l` (log-probabilities of winning and losing responses under the current policy and frozen reference, respectively) and a scalar `beta`, return the mean DPO loss over the batch.
+
+<HintFade client:load
+  hints={[
+    "Compute the log-ratios for winner and loser separately: logr_w = logp_theta_w - logp_ref_w; logr_l = logp_theta_l - logp_ref_l. The margin is beta * (logr_w - logr_l).",
+    "Apply the sigmoid to the margin: sigmoid(x) = 1 / (1 + exp(-x)). NumPy: use np.exp. The per-sample DPO loss is -log(sigmoid(margin)). Take the mean.",
+    "Full solution: logr_w = logp_theta_w - logp_ref_w; logr_l = logp_theta_l - logp_ref_l; margin = beta * (logr_w - logr_l); return np.mean(-np.log(1.0 / (1.0 + np.exp(-margin)))).",
+  ]}
+  solutionCode={`import numpy as np
+
+def dpo_loss(logp_theta_w, logp_theta_l, logp_ref_w, logp_ref_l, beta):
+    """
+    logp_theta_w: (N,) log-probs of winning responses under pi_theta
+    logp_theta_l: (N,) log-probs of losing responses under pi_theta
+    logp_ref_w:   (N,) log-probs of winning responses under pi_ref (frozen)
+    logp_ref_l:   (N,) log-probs of losing responses under pi_ref (frozen)
+    beta:         scalar KL regularization coefficient
+    returns:      scalar mean DPO loss
+    """
+    logr_w = logp_theta_w - logp_ref_w
+    logr_l = logp_theta_l - logp_ref_l
+    margin = beta * (logr_w - logr_l)
+    return np.mean(-np.log(1.0 / (1.0 + np.exp(-margin))))`}
+/>
+
+<PyRunner
+  client:only="react"
+  initialCode={`import numpy as np
+
+def dpo_loss(logp_theta_w, logp_theta_l, logp_ref_w, logp_ref_l, beta):
+    """
+    logp_theta_w: (N,) log-probs of winning responses under pi_theta
+    logp_theta_l: (N,) log-probs of losing responses under pi_theta
+    logp_ref_w:   (N,) log-probs of winning responses under pi_ref (frozen)
+    logp_ref_l:   (N,) log-probs of losing responses under pi_ref (frozen)
+    beta:         scalar KL regularization coefficient
+    returns:      scalar mean DPO loss
+    """
+    # TODO: implement
+    pass
+
+# Sanity checks
+beta = 0.5
+# Zero margin (log-ratios equal) -> loss should be log(2)
+logp_tw = np.array([-1.0, -2.0])
+logp_tl = np.array([-1.0, -2.0])
+logp_rw = np.array([-1.0, -2.0])
+logp_rl = np.array([-1.0, -2.0])
+result = dpo_loss(logp_tw, logp_tl, logp_rw, logp_rl, beta)
+if result is not None:
+    print("Zero-margin loss:", round(result, 4), "(expect ~0.6931)")
+else:
+    print("Not yet implemented")
+`} />
+
+<AssertionTests
+  client:only="react"
+  userCode={`import numpy as np
+
+def dpo_loss(logp_theta_w, logp_theta_l, logp_ref_w, logp_ref_l, beta):
+    logr_w = logp_theta_w - logp_ref_w
+    logr_l = logp_theta_l - logp_ref_l
+    margin = beta * (logr_w - logr_l)
+    return np.mean(-np.log(1.0 / (1.0 + np.exp(-margin))))
+`}
+  testCode={`import numpy as np
+
+def dpo_loss(logp_theta_w, logp_theta_l, logp_ref_w, logp_ref_l, beta):
+    logr_w = logp_theta_w - logp_ref_w
+    logr_l = logp_theta_l - logp_ref_l
+    margin = beta * (logr_w - logr_l)
+    return np.mean(-np.log(1.0 / (1.0 + np.exp(-margin))))
+
+beta = 0.5
+
+# Test 1: loss is non-negative
+logp_tw = np.array([-1.0, -2.0, -0.5])
+logp_tl = np.array([-2.0, -3.0, -1.5])
+logp_rw = np.array([-1.5, -2.5, -1.0])
+logp_rl = np.array([-2.5, -3.5, -2.0])
+loss = dpo_loss(logp_tw, logp_tl, logp_rw, logp_rl, beta)
+assert loss >= 0, f"Loss must be non-negative, got {loss}"
+
+# Test 2: zero margin (all log-ratios equal) -> loss = log(2)
+logp_eq = np.array([-1.0, -2.0, -3.0])
+loss2 = dpo_loss(logp_eq, logp_eq, logp_eq, logp_eq, beta)
+assert np.isclose(loss2, np.log(2), atol=1e-6), f"Zero-margin loss should be log(2)={np.log(2):.4f}, got {loss2}"
+
+# Test 3: infinite positive margin -> loss approaches 0
+large = np.array([100.0])
+small = np.array([-100.0])
+zero = np.array([0.0])
+loss3 = dpo_loss(large, small, zero, zero, beta)
+assert loss3 < 1e-4, f"Infinite-margin loss should approach 0, got {loss3}"
+
+# Test 4: output is scalar
+assert np.isscalar(loss) or np.asarray(loss).ndim == 0, "Output must be scalar"
+
+# Test 5: larger beta sharpens signal (smaller loss for same positive margin)
+lw = np.array([1.0])
+ll = np.array([-1.0])
+rw = np.array([0.0])
+rl = np.array([0.0])
+loss_small_beta = dpo_loss(lw, ll, rw, rl, 0.1)
+loss_large_beta = dpo_loss(lw, ll, rw, rl, 2.0)
+assert loss_large_beta < loss_small_beta, "Larger beta should give smaller loss for positive margin"
+
+print("ok")
+`}
+/>
+
+<RetrievalCheck client:load questions={[
+  { prompt: "In the NumPy implementation, the log-ratios logr_w = logp_theta_w - logp_ref_w represent what quantity geometrically?", options: [
+    { text: "logr_w is the log of the probability ratio pi_theta(y_w|x) / pi_ref(y_w|x). It measures how much more (or less) likely the current policy assigns to the winning response compared to the reference. Positive logr_w means pi_theta has moved probability mass toward y_w relative to pi_ref.", correct: true, explain: "Since logp_theta_w = log pi_theta(y_w|x) and logp_ref_w = log pi_ref(y_w|x), their difference is log[pi_theta(y_w|x) / pi_ref(y_w|x)]. This is the implicit reward that pi_theta assigns to y_w (up to the beta scaling). A well-trained DPO policy should have large positive logr_w (favoring winners) and large negative logr_l (disfavoring losers)." },
+    { text: "logr_w is the KL divergence between pi_theta and pi_ref evaluated at the winning response, measuring how far the policy has moved from initialization.", correct: false, explain: "KL divergence is an expectation over all responses: KL(pi_theta || pi_ref) = E_{y~pi_theta}[log(pi_theta/pi_ref)]. The single log-ratio at y_w is one sample from the integrand, not the full KL. It is best interpreted as the implicit reward assigned to y_w, not as KL divergence." },
+    { text: "logr_w is the entropy of pi_theta at the winning response; larger values indicate the policy is more uncertain about whether y_w is a good response.", correct: false, explain: "Entropy is -E[log p(y)], a property of the full distribution, not a ratio at a single response. logr_w = log(pi_theta/pi_ref) is a likelihood ratio, not an entropy measure. High logr_w means pi_theta assigns relatively more probability to y_w than pi_ref, indicating increased preference — the opposite of uncertainty." },
+  ]},
+]} />
+
+</StageSection>
+
+<StageSection id="pdf" title="⑤ Original paper">
+
+<PdfViewer src="/pdfs/2305.18290.pdf" title="Direct Preference Optimization: Your Language Model is Secretly a Reward Model (Rafailov et al. 2023)" />
+
+Suggested reading order: §4 (Direct Preference Optimization — the full derivation from the KL-regularized RL objective to the DPO loss) → §4.1 (Deriving the DPO Objective — the key algebraic steps showing how the partition function cancels) → §5 (Experiments — comparison with PPO-based RLHF on sentiment control and summarization benchmarks).
+
+</StageSection>
