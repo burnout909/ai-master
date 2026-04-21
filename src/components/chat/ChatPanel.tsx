@@ -51,6 +51,12 @@ export default function ChatPanel(props: Props) {
   const active = store.getActive();
   const currentStage = useCurrentStage(props.mode === "paper");
 
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.innerWidth < 1100) setOpen(false);
+  }, []);
+
   const [input, setInput] = useState("");
   const [view, setView] = useState<"chat" | "history">("chat");
   const [streaming, setStreaming] = useState(false);
@@ -167,10 +173,12 @@ export default function ChatPanel(props: Props) {
     props.mode === "progress" ? "Progress" : "Review";
 
   return (
+    <>
     <div
       className="flex flex-col h-full border border-line rounded-[4px] overflow-hidden"
       style={{ background: "var(--paper-2)" }}
       data-chat-panel
+      data-open={open}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-line">
         <div className="flex items-center gap-2 min-w-0">
@@ -190,6 +198,7 @@ export default function ChatPanel(props: Props) {
             title="히스토리"
           >📚</button>
           <button onClick={newSession} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="새 대화">＋</button>
+          <button onClick={() => setOpen(false)} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="닫기">×</button>
         </div>
       </div>
 
@@ -235,5 +244,13 @@ export default function ChatPanel(props: Props) {
         </>
       )}
     </div>
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          className="chat-fab hidden fixed bottom-6 right-6 z-50 px-4 py-3 text-paper rounded-[4px] shadow"
+          style={{ background: "var(--accent)" }}
+        >Tutor</button>
+      )}
+    </>
   );
 }

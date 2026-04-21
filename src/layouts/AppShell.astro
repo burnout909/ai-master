@@ -39,5 +39,35 @@ const { title, meta, backHref, backLabel, htmlTitle } = Astro.props;
         </aside>
       </div>
     </div>
+    <style is:global>
+      @media (max-width: 1200px) {
+        main.prose { max-width: 68ch; }
+      }
+      @media (max-width: 1100px) {
+        body .grid[style*="grid-template-columns"] {
+          grid-template-columns: var(--col-nav) minmax(0, 1fr) !important;
+        }
+        [data-chat-panel] {
+          position: fixed !important;
+          top: var(--top-bar-h) !important;
+          right: 0 !important;
+          bottom: 0 !important;
+          width: min(420px, 90vw) !important;
+          z-index: 50;
+          transform: translateX(100%);
+          transition: transform 180ms ease;
+        }
+        [data-chat-panel][data-open="true"] {
+          transform: translateX(0);
+        }
+        .chat-fab { display: inline-flex !important; }
+      }
+      @media (max-width: 900px) {
+        body .grid[style*="grid-template-columns"] {
+          grid-template-columns: minmax(0, 1fr) !important;
+        }
+        aside:has(> div[class*="sticky"]) { display: none; }
+      }
+    </style>
   </body>
 </html>
