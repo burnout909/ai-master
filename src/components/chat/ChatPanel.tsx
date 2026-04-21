@@ -179,6 +179,10 @@ export default function ChatPanel(props: Props) {
       style={{ background: "var(--paper-2)" }}
       data-chat-panel
       data-open={open}
+      role="complementary"
+      aria-label="AI tutor panel"
+      tabIndex={-1}
+      onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-line">
         <div className="flex items-center gap-2 min-w-0">
@@ -196,9 +200,10 @@ export default function ChatPanel(props: Props) {
             onClick={() => setView((v) => v === "chat" ? "history" : "chat")}
             className="text-[12px] px-2 py-1 text-mute hover:text-ink"
             title="히스토리"
+            aria-label="히스토리 열기/닫기"
           >📚</button>
-          <button onClick={newSession} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="새 대화">＋</button>
-          <button onClick={() => setOpen(false)} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="닫기">×</button>
+          <button onClick={newSession} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="새 대화" aria-label="새 대화 시작">＋</button>
+          <button onClick={() => setOpen(false)} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="닫기" aria-label="튜터 패널 닫기">×</button>
         </div>
       </div>
 
@@ -234,11 +239,12 @@ export default function ChatPanel(props: Props) {
               rows={2}
               placeholder="질문을 입력하세요. Enter 전송, Shift+Enter 줄바꿈."
               className="flex-1 resize-none px-2 py-1 text-[14px] border border-line rounded-[4px] bg-paper outline-none focus:border-ink"
+              aria-label="질문 입력"
             />
             {streaming ? (
-              <button onClick={abort} className="px-3 text-[12px] border border-line rounded-[4px] hover:border-ink">중단</button>
+              <button onClick={abort} className="px-3 text-[12px] border border-line rounded-[4px] hover:border-ink" aria-label="응답 중단">중단</button>
             ) : (
-              <button onClick={send} disabled={disabled} className="px-3 text-[12px] text-paper rounded-[4px] disabled:opacity-50" style={{ background: "var(--accent)" }}>전송</button>
+              <button onClick={send} disabled={disabled} className="px-3 text-[12px] text-paper rounded-[4px] disabled:opacity-50" style={{ background: "var(--accent)" }} aria-label="메시지 전송">전송</button>
             )}
           </div>
         </>
@@ -249,6 +255,7 @@ export default function ChatPanel(props: Props) {
           onClick={() => setOpen(true)}
           className="chat-fab hidden fixed bottom-6 right-6 z-50 px-4 py-3 text-paper rounded-[4px] shadow"
           style={{ background: "var(--accent)" }}
+          aria-label="튜터 패널 열기"
         >Tutor</button>
       )}
     </>

@@ -15,8 +15,9 @@ export function SessionList({ store, onPickActive }: Props) {
       <button
         onClick={() => { store.startSession("socratic"); onPickActive(); }}
         className="mx-3 my-2 text-[13px] text-left border border-line rounded-[4px] px-2 py-1 hover:border-ink"
+        aria-label="새 대화 시작"
       >＋ 새 대화</button>
-      <ol className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-1">
+      <ol className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-1" role="list">
         {sorted.map((s) => (
           <li key={s.id} className="border-b border-line/60 py-1.5">
             <div className="flex items-center gap-2">
@@ -39,10 +40,12 @@ export function SessionList({ store, onPickActive }: Props) {
               <button
                 onClick={() => { setEditingId(s.id); setDraft(s.title); }}
                 className="text-[11px] text-mute hover:text-ink" title="이름 바꾸기"
+                aria-label="세션 이름 바꾸기"
               >✎</button>
               <button
                 onClick={() => { if (confirm("이 세션을 삭제할까?")) store.deleteSession(s.id); }}
                 className="text-[11px] text-mute hover:text-[color:var(--danger)]" title="삭제"
+                aria-label="세션 삭제"
               >×</button>
             </div>
           </li>
