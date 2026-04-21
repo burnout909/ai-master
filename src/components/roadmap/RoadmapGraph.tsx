@@ -8,10 +8,11 @@ export function RoadmapGraph({ papers }: Props) {
   const yearMax = 2026;
   const yearCount = yearMax - yearMin + 1;
 
-  const laneHeight = 80;
-  const yearWidth = 72;
-  const totalWidth = yearCount * yearWidth + 120;
-  const totalHeight = ERAS.length * laneHeight + 40;
+  const yearWidth = 84;
+  const rowGap = 26;
+  const circleR = 9;
+  const leftPad = 140;
+  const topPad = 50;
 
   const cellBuckets = new Map<string, PaperMeta[]>();
   for (const p of papers) {
@@ -24,14 +25,33 @@ export function RoadmapGraph({ papers }: Props) {
   for (const arr of cellBuckets.values()) {
     arr.forEach((p, i) => cellIndex.set(p.slug, { sub: i, n: arr.length }));
   }
+
+  const laneMaxN: number[] = ERAS.map((era) => {
+    let max = 1;
+    for (const [k, arr] of cellBuckets) {
+      if (k.startsWith(`${era.id}:`) && arr.length > max) max = arr.length;
+    }
+    return max;
+  });
+  const laneHeights = laneMaxN.map((n) => Math.max(60, n * rowGap + 32));
+  const laneTops: number[] = [];
+  let acc = topPad;
+  for (const h of laneHeights) {
+    laneTops.push(acc);
+    acc += h;
+  }
+  const totalHeight = acc + 20;
+  const totalWidth = leftPad + yearCount * yearWidth + 40;
+
   const place = (p: PaperMeta) => {
     const eraIdx = ERAS.findIndex((e) => e.id === p.era);
     const { sub, n } = cellIndex.get(p.slug) ?? { sub: 0, n: 1 };
-    const cxOffset = (sub - (n - 1) / 2) * 20;
-    const cx = 120 + (p.year - yearMin) * yearWidth + cxOffset;
-    const cy = 40 + eraIdx * laneHeight + 34;
-    const labelY = cy + 22 + (sub % 2) * 14;
-    return { cx, cy, labelY };
+    const laneTop = laneTops[eraIdx];
+    const laneH = laneHeights[eraIdx];
+    const laneCenter = laneTop + laneH / 2;
+    const cy = laneCenter + (sub - (n - 1) / 2) * rowGap;
+    const cx = leftPad + (p.year - yearMin) * yearWidth;
+    return { cx, cy };
   };
 
   return (
@@ -41,28 +61,44 @@ export function RoadmapGraph({ papers }: Props) {
       role="img"
       aria-label="Roadmap of deep learning papers"
     >
-      {ERAS.map((era, i) => (
-        <text
-          key={era.id}
-          x={10}
-          y={40 + i * laneHeight + 20}
-          className="text-xs"
-          fill="#666"
-        >
-          {era.label}
-        </text>
-      ))}
+      {ERAS.map((era, i) => {
+        const top = laneTops[i];
+        const h = laneHeights[i];
+        return (
+          <g key={era.id}>
+            {i > 0 && (
+              <line
+                x1={0}
+                x2={totalWidth}
+                y1={top}
+                y2={top}
+                stroke="#e6e2da"
+                strokeWidth={1}
+              />
+            )}
+            <text
+              x={16}
+              y={top + h / 2 + 4}
+              className="text-xs"
+              fill="#6b6b72"
+            >
+              {era.label}
+            </text>
+          </g>
+        );
+      })}
       {Array.from({ length: yearCount }, (_, i) => (
-        <text
-          key={i}
-          x={120 + i * yearWidth}
-          y={20}
-          className="text-xs"
-          fill="#999"
-          textAnchor="middle"
-        >
-          {yearMin + i}
-        </text>
+        <g key={i}>
+          <text
+            x={leftPad + i * yearWidth}
+            y={28}
+            className="text-xs"
+            fill="#9ca3af"
+            textAnchor="middle"
+          >
+            {yearMin + i}
+          </text>
+        </g>
       ))}
       {papers.flatMap((p) =>
         (p.influencedBy ?? []).map((srcSlug) => {
@@ -84,33 +120,47 @@ export function RoadmapGraph({ papers }: Props) {
         }),
       )}
       {papers.map((p) => {
-        const { cx, cy, labelY } = place(p);
-        const common = { cx, cy, r: 10 };
+        const { cx, cy } = place(p);
+        const labelX = cx + circleR + 6;
         const fill =
           p.status === "implemented" ? "#2563eb"
           : p.status === "stub" ? "#94a3b8"
           : "#e2e8f0";
-
+        const labelFill =
+          p.status === "implemented" ? "#0a0a0b" : "#9ca3af";
         const circle = (
-          <circle {...common} fill={fill} stroke="#1e293b" strokeWidth={p.status === "implemented" ? 2 : 1} />
+          <circle
+            cx={cx}
+            cy={cy}
+            r={circleR}
+            fill={fill}
+            stroke="#1e293b"
+            strokeWidth={p.status === "implemented" ? 1.5 : 1}
+          />
         );
-
+        const label = (
+          <text
+            x={labelX}
+            y={cy + 4}
+            className="text-[11px]"
+            textAnchor="start"
+            fill={labelFill}
+          >
+            {p.slug}
+          </text>
+        );
         if (p.status === "implemented") {
           return (
             <a key={p.slug} href={`/papers/${p.slug}`} title={p.title}>
               {circle}
-              <text x={cx} y={labelY} textAnchor="middle" className="text-xs" fill="#111">
-                {p.slug}
-              </text>
+              {label}
             </a>
           );
         }
         return (
           <g key={p.slug} title={p.title}>
             {circle}
-            <text x={cx} y={labelY} textAnchor="middle" className="text-xs" fill="#9ca3af">
-              {p.slug}
-            </text>
+            {label}
           </g>
         );
       })}
