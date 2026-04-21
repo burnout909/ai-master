@@ -1,6 +1,7 @@
 ---
 import AppShell from "./AppShell.astro";
 import StageNav from "../components/stages/StageNav.astro";
+import ChatPanel from "../components/chat/ChatPanel.tsx";
 interface Props { frontmatter: any; }
 const { frontmatter } = Astro.props;
 const meta = `${frontmatter.authors} · ${frontmatter.year}`;
@@ -12,6 +13,12 @@ const meta = `${frontmatter.authors} · ${frontmatter.year}`;
   backLabel="Roadmap"
 >
   <StageNav slot="nav" slug={frontmatter.slug} />
-  <!-- chat slot will be filled in Task 16 (ChatPanel mount). For now leave empty. -->
+  <ChatPanel
+    slot="chat"
+    client:load
+    mode="paper"
+    paperSlug={frontmatter.slug}
+    storageKey={`chat:paper:${frontmatter.slug}`}
+  />
   <slot />
 </AppShell>
