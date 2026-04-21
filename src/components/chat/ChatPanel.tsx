@@ -192,8 +192,8 @@ export default function ChatPanel(props: Props) {
       tabIndex={-1}
       onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-line">
-        <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+        <div className="flex items-center gap-2.5 min-w-0">
           <span className="text-[11px] uppercase tracking-[0.12em] text-mute">Tutor</span>
           <span className="text-[13px] truncate">{headerTitle}</span>
           {currentStage && (
@@ -203,15 +203,15 @@ export default function ChatPanel(props: Props) {
             <span className="text-[11px] px-1.5 py-0.5 rounded-[4px] border border-accent text-accent">direct</span>
           )}
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-0.5">
           <button
             onClick={() => setView((v) => v === "chat" ? "history" : "chat")}
-            className="text-[12px] px-2 py-1 text-mute hover:text-ink"
+            className="text-[13px] px-2 py-1.5 text-mute hover:text-ink rounded-[4px]"
             title="히스토리"
             aria-label="히스토리 열기/닫기"
           >📚</button>
-          <button onClick={newSession} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="새 대화" aria-label="새 대화 시작">＋</button>
-          <button onClick={() => setOpen(false)} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="닫기" aria-label="튜터 패널 닫기">×</button>
+          <button onClick={newSession} className="text-[13px] px-2 py-1.5 text-mute hover:text-ink rounded-[4px]" title="새 대화" aria-label="새 대화 시작">＋</button>
+          <button onClick={() => setOpen(false)} className="text-[13px] px-2 py-1.5 text-mute hover:text-ink rounded-[4px]" title="닫기" aria-label="튜터 패널 닫기">×</button>
         </div>
       </div>
 
@@ -225,14 +225,14 @@ export default function ChatPanel(props: Props) {
             onJumpToAnswer={(i) => jumpToMsg(i + 1)}
             onReAsk={(t) => setInput(t)}
           />
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
             {(active?.messages ?? []).map((m, i) => (
-              <div key={i} ref={(el) => { messageRefs.current[i] = el; }}>
+              <div key={i} ref={(el) => { messageRefs.current[i] = el; }} className="flex flex-col">
                 <ChatMessage msg={m} streaming={streaming && i === active!.messages.length - 1 && m.role === "assistant"} />
               </div>
             ))}
             {error && (
-              <div className="flex items-center gap-2 text-[12px] text-[color:var(--danger)]">
+              <div className="flex items-center gap-2 text-[12px] text-[color:var(--danger)] px-1">
                 <span>{error}</span>
                 <button
                   onClick={() => {
@@ -247,20 +247,20 @@ export default function ChatPanel(props: Props) {
             )}
           </div>
 
-          <div className="border-t border-line p-2 flex gap-2">
+          <div className="border-t border-line p-3 flex gap-2.5 items-end">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              rows={2}
+              rows={Math.min(5, Math.max(2, input.split("\n").length))}
               placeholder="질문을 입력하세요. Enter 전송, Shift+Enter 줄바꿈."
-              className="flex-1 resize-none px-2 py-1 text-[14px] border border-line rounded-[4px] bg-paper outline-none focus:border-ink"
+              className="flex-1 resize-none px-3 py-2 text-[14px] leading-[1.55] border border-line rounded-[4px] bg-paper outline-none focus:border-ink"
               aria-label="질문 입력"
             />
             {streaming ? (
-              <button onClick={abort} className="px-3 text-[12px] border border-line rounded-[4px] hover:border-ink" aria-label="응답 중단">중단</button>
+              <button onClick={abort} className="px-3.5 py-2 text-[13px] border border-line rounded-[4px] hover:border-ink self-stretch" aria-label="응답 중단">중단</button>
             ) : (
-              <button onClick={send} disabled={disabled} className="px-3 text-[12px] text-paper rounded-[4px] disabled:opacity-50" style={{ background: "var(--accent)" }} aria-label="메시지 전송">전송</button>
+              <button onClick={send} disabled={disabled} className="px-3.5 py-2 text-[13px] text-paper rounded-[4px] disabled:opacity-50 self-stretch" style={{ background: "var(--accent)" }} aria-label="메시지 전송">전송</button>
             )}
           </div>
         </>

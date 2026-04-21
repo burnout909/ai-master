@@ -10,12 +10,12 @@ export function ChatMessage({ msg, streaming }: Props) {
   const isUser = msg.role === "user";
   return (
     <div
-      className={isUser ? "self-end max-w-[88%] px-3 py-2 rounded-[4px]" : "self-start max-w-[92%] px-3 py-2 rounded-[4px] border border-line"}
+      className={isUser ? "self-end max-w-[88%] px-3.5 py-2.5 rounded-[4px]" : "self-start max-w-[92%] px-4 py-3 rounded-[4px] border border-line"}
       style={{
         background: isUser ? "var(--accent-soft)" : "var(--paper-2)",
         color: "var(--ink)",
         fontSize: 15,
-        lineHeight: 1.65,
+        lineHeight: 1.7,
       }}
     >
       <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
