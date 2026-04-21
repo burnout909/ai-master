@@ -16,8 +16,8 @@
   },
   "dependencies": {
     "@astrojs/mdx": "^5.0.3",
-    "@astrojs/node": "^10.0.5",
     "@astrojs/react": "^5.0.3",
+    "@astrojs/vercel": "^10.0.4",
     "@google/genai": "^1.50.1",
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.2.2",
