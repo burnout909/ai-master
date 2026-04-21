@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ChatMessage } from "./ChatMessage";
+import { QuestionStack } from "./QuestionStack";
 import { SessionList } from "./SessionList";
 import { createStore, type Store } from "../../lib/chat/store";
 import { createSseParser } from "../../lib/chat/sseParser";
@@ -56,6 +57,17 @@ export default function ChatPanel(props: Props) {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const messageRefs = useRef<Array<HTMLDivElement | null>>([]);
+
+  function jumpToMsg(idx: number) {
+    const el = messageRefs.current[idx];
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.animate(
+      [{ background: "var(--accent-soft)" }, { background: "var(--paper-2)" }],
+      { duration: 900 },
+    );
+  }
 
   useEffect(() => {
     if (!active) store.startSession("socratic");
@@ -169,9 +181,17 @@ export default function ChatPanel(props: Props) {
         <SessionList store={store} onPickActive={() => setView("chat")} />
       ) : (
         <>
+          <QuestionStack
+            messages={active?.messages ?? []}
+            onJumpToQuestion={(i) => jumpToMsg(i)}
+            onJumpToAnswer={(i) => jumpToMsg(i + 1)}
+            onReAsk={(t) => setInput(t)}
+          />
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
             {(active?.messages ?? []).map((m, i) => (
-              <ChatMessage key={i} msg={m} streaming={streaming && i === active!.messages.length - 1 && m.role === "assistant"} />
+              <div key={i} ref={(el) => { messageRefs.current[i] = el; }}>
+                <ChatMessage msg={m} streaming={streaming && i === active!.messages.length - 1 && m.role === "assistant"} />
+              </div>
             ))}
             {error && <div className="text-[12px] text-[color:var(--danger)]">{error}</div>}
           </div>
