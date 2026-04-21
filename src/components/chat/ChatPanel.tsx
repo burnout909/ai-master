@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ChatMessage } from "./ChatMessage";
+import { SessionList } from "./SessionList";
 import { createStore, type Store } from "../../lib/chat/store";
 import { createSseParser } from "../../lib/chat/sseParser";
 import { detectSkipIntent } from "../../lib/chat/skipDetector";
@@ -50,6 +51,7 @@ export default function ChatPanel(props: Props) {
   const currentStage = useCurrentStage(props.mode === "paper");
 
   const [input, setInput] = useState("");
+  const [view, setView] = useState<"chat" | "history">("chat");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -154,32 +156,43 @@ export default function ChatPanel(props: Props) {
           )}
         </div>
         <div className="flex gap-1">
+          <button
+            onClick={() => setView((v) => v === "chat" ? "history" : "chat")}
+            className="text-[12px] px-2 py-1 text-mute hover:text-ink"
+            title="히스토리"
+          >📚</button>
           <button onClick={newSession} className="text-[12px] px-2 py-1 text-mute hover:text-ink" title="새 대화">＋</button>
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
-        {(active?.messages ?? []).map((m, i) => (
-          <ChatMessage key={i} msg={m} streaming={streaming && i === active!.messages.length - 1 && m.role === "assistant"} />
-        ))}
-        {error && <div className="text-[12px] text-[color:var(--danger)]">{error}</div>}
-      </div>
+      {view === "history" ? (
+        <SessionList store={store} onPickActive={() => setView("chat")} />
+      ) : (
+        <>
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
+            {(active?.messages ?? []).map((m, i) => (
+              <ChatMessage key={i} msg={m} streaming={streaming && i === active!.messages.length - 1 && m.role === "assistant"} />
+            ))}
+            {error && <div className="text-[12px] text-[color:var(--danger)]">{error}</div>}
+          </div>
 
-      <div className="border-t border-line p-2 flex gap-2">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          rows={2}
-          placeholder="질문을 입력하세요. Enter 전송, Shift+Enter 줄바꿈."
-          className="flex-1 resize-none px-2 py-1 text-[14px] border border-line rounded-[4px] bg-paper outline-none focus:border-ink"
-        />
-        {streaming ? (
-          <button onClick={abort} className="px-3 text-[12px] border border-line rounded-[4px] hover:border-ink">중단</button>
-        ) : (
-          <button onClick={send} className="px-3 text-[12px] text-paper rounded-[4px]" style={{ background: "var(--accent)" }}>전송</button>
-        )}
-      </div>
+          <div className="border-t border-line p-2 flex gap-2">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              rows={2}
+              placeholder="질문을 입력하세요. Enter 전송, Shift+Enter 줄바꿈."
+              className="flex-1 resize-none px-2 py-1 text-[14px] border border-line rounded-[4px] bg-paper outline-none focus:border-ink"
+            />
+            {streaming ? (
+              <button onClick={abort} className="px-3 text-[12px] border border-line rounded-[4px] hover:border-ink">중단</button>
+            ) : (
+              <button onClick={send} className="px-3 text-[12px] text-paper rounded-[4px]" style={{ background: "var(--accent)" }}>전송</button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
