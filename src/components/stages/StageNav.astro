@@ -2,24 +2,31 @@
 interface Props { slug: string; }
 const { slug } = Astro.props;
 const stages = [
-  { id: "intuition", label: "① Intuition" },
-  { id: "math",      label: "② Math" },
-  { id: "pseudo",    label: "③ Pseudo code" },
-  { id: "code",      label: "④ Code" },
-  { id: "pdf",       label: "⑤ Original PDF" },
+  { id: "intuition", label: "Intuition", num: "01" },
+  { id: "math",      label: "Math",      num: "02" },
+  { id: "pseudo",    label: "Pseudo",    num: "03" },
+  { id: "code",      label: "Code",      num: "04" },
+  { id: "pdf",       label: "Original",  num: "05" },
 ];
 ---
-<aside class="sticky top-4 w-48 hidden md:block" data-paper-slug={slug}>
-  <ol class="space-y-1 text-sm">
+<nav data-paper-slug={slug} class="text-[13px]">
+  <div class="text-[11px] uppercase tracking-[0.12em] text-mute mb-3">Stages</div>
+  <ol class="space-y-1">
     {stages.map((s) => (
       <li>
-        <a href={`#${s.id}`} class="block px-2 py-1 rounded hover:bg-neutral-100" data-stage-id={s.id}>
-          <span class="stage-mark" data-slug={slug} data-stage={s.id}>○</span> {s.label}
+        <a
+          href={`#${s.id}`}
+          class="group flex items-baseline gap-3 py-1.5 border-b border-line/60 hover:border-ink transition-colors"
+          data-stage-id={s.id}
+        >
+          <span class="text-[11px] text-mute tabular-nums">{s.num}</span>
+          <span class="flex-1">{s.label}</span>
+          <span class="stage-mark text-mute" data-slug={slug} data-stage={s.id}>·</span>
         </a>
       </li>
     ))}
   </ol>
-</aside>
+</nav>
 <script>
   import { getStageStatus } from "../../lib/progress";
   const marks = document.querySelectorAll<HTMLElement>(".stage-mark");
@@ -27,8 +34,8 @@ const stages = [
     const slug = m.dataset.slug!;
     const stage = m.dataset.stage! as any;
     const status = getStageStatus(slug, stage);
-    if (status === "mastered") m.textContent = "✓";
-    else if (status === "skipped") m.textContent = "✗";
+    if (status === "mastered") { m.textContent = "✓"; m.classList.remove("text-mute"); m.classList.add("text-ink"); }
+    else if (status === "skipped") m.textContent = "—";
     else if (status === "revealed") m.textContent = "◐";
   });
 </script>

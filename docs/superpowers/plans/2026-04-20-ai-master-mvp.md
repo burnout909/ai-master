@@ -38,8 +38,9 @@ Expected: `astro.config.mjs` updated with React, Tailwind, MDX; deps installed.
 
 Create `.nvmrc`:
 ```
-20
+22
 ```
+(Astro 6 requires Node ≥ 22.12. Earlier draft used `20` but that predated the Astro 6 upgrade picked up by `npm create astro@latest`.)
 
 - [ ] **Step 4: Install remaining dependencies**
 
@@ -54,10 +55,9 @@ Expected: all install cleanly.
 Edit `src/styles/global.css`:
 ```css
 @import "katex/dist/katex.min.css";
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 ```
+(Tailwind v4 via `@tailwindcss/vite` uses a single `@import "tailwindcss"` instead of v3's `@tailwind base/components/utilities` directives.)
 
 Import it from `src/pages/index.astro` via layout (next task).
 

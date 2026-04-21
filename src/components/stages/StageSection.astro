@@ -2,7 +2,7 @@
 interface Props { id: string; title: string; }
 const { id, title } = Astro.props;
 ---
-<section id={id} class="scroll-mt-24 my-12">
+<section id={id} data-stage-section={id} class="scroll-mt-24 my-12">
   <h2 class="text-2xl font-semibold mb-4">{title}</h2>
   <slot />
 </section>

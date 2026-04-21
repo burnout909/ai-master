@@ -1,2 +1,89 @@
 @import "katex/dist/katex.min.css";
 @import "tailwindcss";
+
+@font-face {
+  font-family: "Pretendard Variable";
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/PretendardVariable.woff2") format("woff2-variations");
+  size-adjust: 100%;
+  ascent-override: 92%;
+  descent-override: 23%;
+  line-gap-override: 0%;
+}
+
+:root {
+  --ink: #0A0A0B;
+  --ink-2: #2A2A2E;
+  --mute: #6B6B72;
+  --line: #E6E2DA;
+  --paper: #FAF7F0;
+  --paper-2: #FFFDF7;
+  --accent: #1E2A6B;
+  --accent-soft: #E9EAF3;
+  --danger: #8B1E2B;
+
+  --radius: 4px;
+  --shell-max: 1400px;
+  --col-nav: 180px;
+  --col-chat: 380px;
+  --col-main: 68ch;
+  --gap-nav-main: 48px;
+  --gap-main-chat: 32px;
+  --top-bar-h: 48px;
+}
+
+@theme {
+  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", Roboto, sans-serif;
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-mute: var(--mute);
+  --color-line: var(--line);
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+}
+
+html, body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "ss02";
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-size: 17px;
+  line-height: 1.75;
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: 40px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+h2 { font-size: 28px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.3; }
+h3 { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.4; }
+
+a { color: var(--accent); text-underline-offset: 3px; }
+a:hover { text-decoration: underline; }
+
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+hr, .hairline {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+}
+
+.prose :where(p, ul, ol, blockquote) { color: var(--ink); }
+.prose :where(code):not(pre code) {
+  background: var(--accent-soft);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius);
+  font-size: 0.9em;
+}

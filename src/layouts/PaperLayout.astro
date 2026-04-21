@@ -1,26 +1,24 @@
 ---
-import "../styles/global.css";
+import AppShell from "./AppShell.astro";
 import StageNav from "../components/stages/StageNav.astro";
+import ChatPanel from "../components/chat/ChatPanel.tsx";
 interface Props { frontmatter: any; }
 const { frontmatter } = Astro.props;
+const meta = `${frontmatter.authors} · ${frontmatter.year}`;
 ---
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>{frontmatter.title} — ai_master</title>
-  </head>
-  <body class="bg-white text-neutral-900">
-    <div class="max-w-5xl mx-auto px-4 py-8 grid md:grid-cols-[12rem_1fr] gap-8">
-      <StageNav slug={frontmatter.slug} />
-      <main class="prose max-w-none">
-        <header class="mb-8">
-          <a href="/" class="text-sm text-blue-600">← Roadmap</a>
-          <h1 class="text-3xl font-bold mt-2">{frontmatter.title}</h1>
-          <p class="text-neutral-600">{frontmatter.authors} · {frontmatter.year}</p>
-        </header>
-        <slot />
-      </main>
-    </div>
-  </body>
-</html>
+<AppShell
+  title={frontmatter.title}
+  meta={meta}
+  backHref="/"
+  backLabel="Roadmap"
+>
+  <StageNav slot="nav" slug={frontmatter.slug} />
+  <ChatPanel
+    slot="chat"
+    client:load
+    mode="paper"
+    paperSlug={frontmatter.slug}
+    storageKey={`chat:paper:${frontmatter.slug}`}
+  />
+  <slot />
+</AppShell>

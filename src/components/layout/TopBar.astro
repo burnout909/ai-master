@@ -1,0 +1,22 @@
+---
+interface Props {
+  backHref?: string;
+  backLabel?: string;
+  title: string;
+  meta?: string;
+}
+const { backHref, backLabel, title, meta } = Astro.props;
+---
+<header class="sticky top-0 z-40 bg-paper border-b border-line" style="height: var(--top-bar-h);">
+  <div class="mx-auto flex items-center gap-6 px-6 h-full" style="max-width: var(--shell-max);">
+    {backHref && (
+      <a href={backHref} class="text-[13px] text-mute hover:text-ink">
+        ← {backLabel ?? "back"}
+      </a>
+    )}
+    <div class="flex items-baseline gap-3 min-w-0">
+      <h1 class="text-[15px] font-semibold truncate" style="letter-spacing: -0.005em;">{title}</h1>
+      {meta && <span class="text-[13px] text-mute truncate">{meta}</span>}
+    </div>
+  </div>
+</header>
