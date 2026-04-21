@@ -66,6 +66,7 @@ export default function ChatPanel(props: Props) {
   const disabled = streaming || (cooldownUntil !== null && Date.now() < cooldownUntil);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastUserTextRef = useRef<string>("");
   const messageRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   function jumpToMsg(idx: number) {
@@ -93,6 +94,7 @@ export default function ChatPanel(props: Props) {
     const userMsg: Message = { role: "user", content: text, ts: new Date().toISOString() };
     store.appendMessage(userMsg);
     store.appendMessage({ role: "assistant", content: "", ts: new Date().toISOString() });
+    lastUserTextRef.current = text;
     setInput("");
     setError(null);
     setStreaming(true);
@@ -102,6 +104,7 @@ export default function ChatPanel(props: Props) {
 
     const history = [...(active.messages ?? []), userMsg];
 
+    let cleanCompletion = true;
     let buffer = "";
     const parser = createSseParser((e) => {
       if ("delta" in e) {
@@ -127,9 +130,11 @@ export default function ChatPanel(props: Props) {
         }),
       });
       if (res.status === 429) {
+        cleanCompletion = false;
         setCooldownUntil(Date.now() + 30_000);
         setError("너무 빠르게 요청했어. 30초 후 다시 시도해줘.");
       } else if (!res.ok || !res.body) {
+        cleanCompletion = false;
         setError(`HTTP ${res.status}`);
       } else {
         const reader = res.body.getReader();
@@ -141,18 +146,21 @@ export default function ChatPanel(props: Props) {
         }
       }
     } catch (e: any) {
+      cleanCompletion = false;
       if (e?.name !== "AbortError") setError(e?.message ?? "network error");
     } finally {
       setStreaming(false);
       abortRef.current = null;
 
-      // After streaming completes: handle skip + reason flow
-      if (!awaitingDirectReason && detectSkipIntent(text) && active.pedagogyMode === "socratic") {
-        setAwaitingDirectReason(true);
-      } else if (awaitingDirectReason) {
-        // Next user message was the reason; flip to direct mode.
-        store.setPedagogyMode("direct");
-        setAwaitingDirectReason(false);
+      if (cleanCompletion) {
+        // After streaming completes: handle skip + reason flow
+        if (!awaitingDirectReason && detectSkipIntent(text) && active.pedagogyMode === "socratic") {
+          setAwaitingDirectReason(true);
+        } else if (awaitingDirectReason) {
+          // Next user message was the reason; flip to direct mode.
+          store.setPedagogyMode("direct");
+          setAwaitingDirectReason(false);
+        }
       }
     }
   }
@@ -226,7 +234,15 @@ export default function ChatPanel(props: Props) {
             {error && (
               <div className="flex items-center gap-2 text-[12px] text-[color:var(--danger)]">
                 <span>{error}</span>
-                <button onClick={() => { setError(null); send(); }} className="underline">재시도</button>
+                <button
+                  onClick={() => {
+                    setError(null);
+                    setInput(lastUserTextRef.current);
+                    // Allow React to flush the input state, then send on next tick.
+                    requestAnimationFrame(() => send());
+                  }}
+                  className="underline"
+                >재시도</button>
               </div>
             )}
           </div>

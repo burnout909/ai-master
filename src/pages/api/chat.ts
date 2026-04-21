@@ -31,10 +31,14 @@ export const POST: APIRoute = async ({ request }) => {
     if (!body.paperSlug) {
       return new Response(JSON.stringify({ error: "paperSlug required" }), { status: 400 });
     }
-    const file = path.resolve("src/content/papers", `${body.paperSlug}.mdx`);
+    const known = PAPERS_META.find((p) => p.slug === body.paperSlug);
+    if (!known) {
+      return new Response(JSON.stringify({ error: `unknown paper: ${body.paperSlug}` }), { status: 404 });
+    }
+    const file = path.resolve("src/content/papers", `${known.slug}.mdx`);
     let raw: string;
     try { raw = await fs.readFile(file, "utf8"); }
-    catch { return new Response(JSON.stringify({ error: `paper not found: ${body.paperSlug}` }), { status: 404 }); }
+    catch { return new Response(JSON.stringify({ error: `paper not found: ${known.slug}` }), { status: 404 }); }
     paper = parseMdxStages(raw);
   }
 
