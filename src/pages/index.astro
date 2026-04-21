@@ -4,6 +4,7 @@ import AppShell from "../layouts/AppShell.astro";
 import { RoadmapGraph } from "../components/roadmap/RoadmapGraph.tsx";
 import { ContinueReading } from "../components/home/ContinueReading.tsx";
 import { PAPERS_META } from "../content/papers-meta";
+import ChatPanelWithSnapshot from "../components/chat/ChatPanelWithSnapshot.tsx";
 ---
 <AppShell
   title="ai_master"
@@ -18,6 +19,7 @@ import { PAPERS_META } from "../content/papers-meta";
       <li><a href="/review" class="text-mute hover:text-ink">Review →</a></li>
     </ol>
   </nav>
+  <ChatPanelWithSnapshot slot="chat" client:load mode="roadmap" storageKey="chat:roadmap" />
 
   <section id="continue" class="mb-16">
     <ContinueReading client:only="react" />

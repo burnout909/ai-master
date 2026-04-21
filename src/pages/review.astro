@@ -2,6 +2,7 @@
 export const prerender = true;
 import AppShell from "../layouts/AppShell.astro";
 import { ReviewDeck } from "../components/review/ReviewDeck.tsx";
+import ChatPanelWithSnapshot from "../components/chat/ChatPanelWithSnapshot.tsx";
 ---
 <AppShell title="Review" meta="Today's review queue" backHref="/" backLabel="Home">
   <nav slot="nav" class="text-[13px]">
@@ -11,5 +12,6 @@ import { ReviewDeck } from "../components/review/ReviewDeck.tsx";
       <li><a href="/progress" class="text-mute hover:text-ink">Progress</a></li>
     </ol>
   </nav>
+  <ChatPanelWithSnapshot slot="chat" client:load mode="review" storageKey="chat:review" />
   <ReviewDeck client:only="react" />
 </AppShell>

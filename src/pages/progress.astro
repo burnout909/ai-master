@@ -3,6 +3,7 @@ export const prerender = true;
 import AppShell from "../layouts/AppShell.astro";
 import { ProgressGrid } from "../components/progress/ProgressGrid.tsx";
 import { ExportImport } from "../components/progress/ExportImport.tsx";
+import ChatPanelWithSnapshot from "../components/chat/ChatPanelWithSnapshot.tsx";
 ---
 <AppShell title="Progress" meta="Your learning dashboard" backHref="/" backLabel="Home">
   <nav slot="nav" class="text-[13px]">
@@ -12,6 +13,7 @@ import { ExportImport } from "../components/progress/ExportImport.tsx";
       <li><a href="/review" class="text-mute hover:text-ink">Review queue</a></li>
     </ol>
   </nav>
+  <ChatPanelWithSnapshot slot="chat" client:load mode="progress" storageKey="chat:progress" />
   <ProgressGrid client:only="react" />
   <ExportImport client:only="react" />
 </AppShell>
