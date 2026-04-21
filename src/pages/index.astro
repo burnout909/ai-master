@@ -1,32 +1,35 @@
 ---
-import "../styles/global.css";
+export const prerender = true;
+import AppShell from "../layouts/AppShell.astro";
 import { RoadmapGraph } from "../components/roadmap/RoadmapGraph.tsx";
 import { ContinueReading } from "../components/home/ContinueReading.tsx";
 import { PAPERS_META } from "../content/papers-meta";
 ---
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>ai_master — DL → Agents, step by step</title>
-  </head>
-  <body class="bg-white text-neutral-900">
-    <main class="max-w-5xl mx-auto px-4 py-8">
-      <header class="mb-6">
-        <h1 class="text-4xl font-bold">ai_master</h1>
-        <p class="text-neutral-600">Deep learning → agents, 2012 → 2026, one paper at a time.</p>
-      </header>
-      <ContinueReading client:only="react" />
-      <section class="mt-10">
-        <h2 class="text-2xl font-semibold mb-2">Roadmap</h2>
-        <p class="text-sm text-neutral-600 mb-4">
-          Click a bright node to learn a paper. Grey nodes are planned (not yet implemented).
-        </p>
-        <RoadmapGraph client:load papers={PAPERS_META} />
-      </section>
-      <footer class="mt-10 text-sm text-neutral-500">
-        <a href="/progress">Progress dashboard</a> · <a href="/review">Review queue</a>
-      </footer>
-    </main>
-  </body>
-</html>
+<AppShell
+  title="ai_master"
+  meta="Deep learning → agents, 2012 → 2026"
+>
+  <nav slot="nav" class="text-[13px]">
+    <div class="text-[11px] uppercase tracking-[0.12em] text-mute mb-3">On this page</div>
+    <ol class="space-y-2">
+      <li><a href="#continue" class="text-ink hover:underline">Continue reading</a></li>
+      <li><a href="#roadmap" class="text-ink hover:underline">Roadmap</a></li>
+      <li><a href="/progress" class="text-mute hover:text-ink">Progress →</a></li>
+      <li><a href="/review" class="text-mute hover:text-ink">Review →</a></li>
+    </ol>
+  </nav>
+
+  <section id="continue" class="mb-16">
+    <ContinueReading client:only="react" />
+  </section>
+
+  <section id="roadmap">
+    <h2>Roadmap</h2>
+    <p class="text-mute text-[15px] max-w-prose">
+      Click a bright node to learn a paper. Grey nodes are planned.
+    </p>
+    <div class="mt-6">
+      <RoadmapGraph client:load papers={PAPERS_META} />
+    </div>
+  </section>
+</AppShell>
