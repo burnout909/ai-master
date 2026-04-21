@@ -55,6 +55,7 @@ export default function ChatPanel(props: Props) {
   const [view, setView] = useState<"chat" | "history">("chat");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [awaitingDirectReason, setAwaitingDirectReason] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -134,9 +135,13 @@ export default function ChatPanel(props: Props) {
       setStreaming(false);
       abortRef.current = null;
 
-      if (detectSkipIntent(text) && active.pedagogyMode === "socratic") {
-        // intentionally no-op: server side handles the re-prompt via system instruction.
-        // If user's NEXT message supplies a reason, we flip to direct (see onNextMessage flag below).
+      // After streaming completes: handle skip + reason flow
+      if (!awaitingDirectReason && detectSkipIntent(text) && active.pedagogyMode === "socratic") {
+        setAwaitingDirectReason(true);
+      } else if (awaitingDirectReason) {
+        // Next user message was the reason; flip to direct mode.
+        store.setPedagogyMode("direct");
+        setAwaitingDirectReason(false);
       }
     }
   }
@@ -146,7 +151,10 @@ export default function ChatPanel(props: Props) {
   }
 
   function abort() { abortRef.current?.abort(); }
-  function newSession() { store.startSession("socratic"); }
+  function newSession() {
+    store.startSession("socratic");
+    setAwaitingDirectReason(false);
+  }
 
   const headerTitle =
     props.mode === "paper" ? props.paperSlug :
@@ -165,6 +173,9 @@ export default function ChatPanel(props: Props) {
           <span className="text-[13px] truncate">{headerTitle}</span>
           {currentStage && (
             <span className="text-[11px] text-mute">· {currentStage}</span>
+          )}
+          {active?.pedagogyMode === "direct" && (
+            <span className="text-[11px] px-1.5 py-0.5 rounded-[4px] border border-accent text-accent">direct</span>
           )}
         </div>
         <div className="flex gap-1">
