@@ -1,16 +1,17 @@
 ---
-import "../styles/global.css";
+export const prerender = true;
+import AppShell from "../layouts/AppShell.astro";
 import { ProgressGrid } from "../components/progress/ProgressGrid.tsx";
 import { ExportImport } from "../components/progress/ExportImport.tsx";
 ---
-<html>
-  <head><title>Progress — ai_master</title></head>
-  <body class="bg-white text-neutral-900">
-    <main class="max-w-5xl mx-auto px-4 py-8">
-      <a href="/" class="text-sm text-blue-600">← Home</a>
-      <h1 class="text-3xl font-bold my-4">Progress</h1>
-      <ProgressGrid client:only="react" />
-      <ExportImport client:only="react" />
-    </main>
-  </body>
-</html>
+<AppShell title="Progress" meta="Your learning dashboard" backHref="/" backLabel="Home">
+  <nav slot="nav" class="text-[13px]">
+    <div class="text-[11px] uppercase tracking-[0.12em] text-mute mb-3">Navigate</div>
+    <ol class="space-y-2">
+      <li><a href="/" class="text-mute hover:text-ink">← Roadmap</a></li>
+      <li><a href="/review" class="text-mute hover:text-ink">Review queue</a></li>
+    </ol>
+  </nav>
+  <ProgressGrid client:only="react" />
+  <ExportImport client:only="react" />
+</AppShell>
