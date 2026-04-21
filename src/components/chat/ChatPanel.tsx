@@ -56,6 +56,8 @@ export default function ChatPanel(props: Props) {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [awaitingDirectReason, setAwaitingDirectReason] = useState(false);
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+  const disabled = streaming || (cooldownUntil !== null && Date.now() < cooldownUntil);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -80,7 +82,7 @@ export default function ChatPanel(props: Props) {
 
   async function send() {
     const text = input.trim();
-    if (!text || streaming || !active) return;
+    if (!text || disabled || !active) return;
 
     const userMsg: Message = { role: "user", content: text, ts: new Date().toISOString() };
     store.appendMessage(userMsg);
@@ -118,7 +120,10 @@ export default function ChatPanel(props: Props) {
           pedagogyMode: active.pedagogyMode,
         }),
       });
-      if (!res.ok || !res.body) {
+      if (res.status === 429) {
+        setCooldownUntil(Date.now() + 30_000);
+        setError("너무 빠르게 요청했어. 30초 후 다시 시도해줘.");
+      } else if (!res.ok || !res.body) {
         setError(`HTTP ${res.status}`);
       } else {
         const reader = res.body.getReader();
@@ -204,7 +209,12 @@ export default function ChatPanel(props: Props) {
                 <ChatMessage msg={m} streaming={streaming && i === active!.messages.length - 1 && m.role === "assistant"} />
               </div>
             ))}
-            {error && <div className="text-[12px] text-[color:var(--danger)]">{error}</div>}
+            {error && (
+              <div className="flex items-center gap-2 text-[12px] text-[color:var(--danger)]">
+                <span>{error}</span>
+                <button onClick={() => { setError(null); send(); }} className="underline">재시도</button>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-line p-2 flex gap-2">
@@ -219,7 +229,7 @@ export default function ChatPanel(props: Props) {
             {streaming ? (
               <button onClick={abort} className="px-3 text-[12px] border border-line rounded-[4px] hover:border-ink">중단</button>
             ) : (
-              <button onClick={send} className="px-3 text-[12px] text-paper rounded-[4px]" style={{ background: "var(--accent)" }}>전송</button>
+              <button onClick={send} disabled={disabled} className="px-3 text-[12px] text-paper rounded-[4px] disabled:opacity-50" style={{ background: "var(--accent)" }}>전송</button>
             )}
           </div>
         </>
