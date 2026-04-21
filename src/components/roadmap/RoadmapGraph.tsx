@@ -8,10 +8,31 @@ export function RoadmapGraph({ papers }: Props) {
   const yearMax = 2026;
   const yearCount = yearMax - yearMin + 1;
 
-  const laneHeight = 60;
-  const yearWidth = 60;
+  const laneHeight = 80;
+  const yearWidth = 72;
   const totalWidth = yearCount * yearWidth + 120;
   const totalHeight = ERAS.length * laneHeight + 40;
+
+  const cellBuckets = new Map<string, PaperMeta[]>();
+  for (const p of papers) {
+    const k = `${p.era}:${p.year}`;
+    const arr = cellBuckets.get(k) ?? [];
+    arr.push(p);
+    cellBuckets.set(k, arr);
+  }
+  const cellIndex = new Map<string, { sub: number; n: number }>();
+  for (const arr of cellBuckets.values()) {
+    arr.forEach((p, i) => cellIndex.set(p.slug, { sub: i, n: arr.length }));
+  }
+  const place = (p: PaperMeta) => {
+    const eraIdx = ERAS.findIndex((e) => e.id === p.era);
+    const { sub, n } = cellIndex.get(p.slug) ?? { sub: 0, n: 1 };
+    const cxOffset = (sub - (n - 1) / 2) * 20;
+    const cx = 120 + (p.year - yearMin) * yearWidth + cxOffset;
+    const cy = 40 + eraIdx * laneHeight + 34;
+    const labelY = cy + 22 + (sub % 2) * 14;
+    return { cx, cy, labelY };
+  };
 
   return (
     <svg
@@ -47,15 +68,15 @@ export function RoadmapGraph({ papers }: Props) {
         (p.influencedBy ?? []).map((srcSlug) => {
           const src = papers.find((q) => q.slug === srcSlug);
           if (!src) return null;
-          const eraIdxP = ERAS.findIndex((e) => e.id === p.era);
-          const eraIdxS = ERAS.findIndex((e) => e.id === src.era);
+          const from = place(src);
+          const to = place(p);
           return (
             <line
               key={`${srcSlug}->${p.slug}`}
-              x1={120 + (src.year - yearMin) * yearWidth}
-              y1={40 + eraIdxS * laneHeight + 30}
-              x2={120 + (p.year - yearMin) * yearWidth}
-              y2={40 + eraIdxP * laneHeight + 30}
+              x1={from.cx}
+              y1={from.cy}
+              x2={to.cx}
+              y2={to.cy}
               stroke="#cbd5e1"
               strokeWidth={1}
             />
@@ -63,9 +84,7 @@ export function RoadmapGraph({ papers }: Props) {
         }),
       )}
       {papers.map((p) => {
-        const eraIdx = ERAS.findIndex((e) => e.id === p.era);
-        const cx = 120 + (p.year - yearMin) * yearWidth;
-        const cy = 40 + eraIdx * laneHeight + 30;
+        const { cx, cy, labelY } = place(p);
         const common = { cx, cy, r: 10 };
         const fill =
           p.status === "implemented" ? "#2563eb"
@@ -80,13 +99,20 @@ export function RoadmapGraph({ papers }: Props) {
           return (
             <a key={p.slug} href={`/papers/${p.slug}`} title={p.title}>
               {circle}
-              <text x={cx} y={cy + 24} textAnchor="middle" className="text-xs" fill="#111">
+              <text x={cx} y={labelY} textAnchor="middle" className="text-xs" fill="#111">
                 {p.slug}
               </text>
             </a>
           );
         }
-        return <g key={p.slug} title={p.title}>{circle}</g>;
+        return (
+          <g key={p.slug} title={p.title}>
+            {circle}
+            <text x={cx} y={labelY} textAnchor="middle" className="text-xs" fill="#9ca3af">
+              {p.slug}
+            </text>
+          </g>
+        );
       })}
     </svg>
   );
