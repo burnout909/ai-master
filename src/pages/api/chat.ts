@@ -9,8 +9,8 @@ import type { ChatRequest } from "../../lib/chat/types";
 
 export const prerender = false;
 
-const API_KEY = process.env.GOOGLE_AI_API_KEY;
-const MODEL = process.env.GOOGLE_AI_MODEL ?? "gemini-3.1-pro-preview";
+const API_KEY = import.meta.env.GOOGLE_AI_API_KEY ?? process.env.GOOGLE_AI_API_KEY;
+const MODEL = import.meta.env.GOOGLE_AI_MODEL ?? process.env.GOOGLE_AI_MODEL ?? "gemini-3.1-pro-preview";
 
 function sseFrame(obj: unknown): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
